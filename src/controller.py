@@ -181,7 +181,7 @@ class Router(RyuApp):
 
         # 6. Send the action back to the router
         pkt.serialize()
-        data = bytes(pkt.data) if ev.msg.buffer_id == ofproto.OFP_NO_BUFFER else None
+        data = pkt.data if ev.msg.buffer_id == ofproto.OFP_NO_BUFFER else None
         actions = [datapath.ofproto_parser.OFPActionOutput(route[1])]
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=in_port, actions=actions, data=data)
         self.logger.info("Sending packet out IPv4")
