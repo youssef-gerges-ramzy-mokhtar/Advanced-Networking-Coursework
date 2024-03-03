@@ -179,6 +179,14 @@ class Router(RyuApp):
         # 5. ACTION 3: decrement ttl
         self.__decrement_ttl(pkt)
 
+        # 6. Send the action back to the router
+        pkt.serialize()
+        data = bytes(pkt.data) if ev.msg.buffer_id == ofproto.OFP_NO_BUFFER else None
+        actions = [datapath.ofproto_parser.OFPActionOutput(route[1])]
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=in_port, actions=actions, data=data)
+        self.logger.info("Sending packet out IPv4")
+        datapath.send_msg(out)
+
     def __decrement_ttl(self, pkt):
         ipv4_header = pkt.get_protocol(ipv4)
         ipv4_header.ttl = ipv4_header.ttl - 1
@@ -197,16 +205,19 @@ class Router(RyuApp):
 
     def __update_destination_mac(self, dpid, pkt, route):
         ethernet_header = pkt.get_protocol(ethernet)
+        ipv4_header = pkt.get_protocol(ipv4)
 
         # getting the next ip address to forward the packet to
         hop, out_port, dest_ip = route
         next_ip = hop
         if hop == None:
-            next_ip = dest_ip[:-3] # next ip address is the final destination
+            next_ip = ipv4_header.dst # next ip address is the final destination
 
         print(f"Next Ip Address = {next_ip}")
 
         next_ip_mac = self.arp_table.get_hw(dpid, next_ip)
+        if next_ip_mac is None:
+            print("=========== Found the Problem ==========")
         ethernet_header.dst = next_ip_mac
         print(f"\t !packet after dst update\n{pkt}")
 
