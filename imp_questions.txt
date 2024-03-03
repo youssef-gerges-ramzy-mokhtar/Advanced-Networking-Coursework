@@ -1,0 +1,13 @@
+2 big questions
+	- How to handle arp flooding
+		. the arp seems only to happen with ip addresses within the same subnet
+			[.] do I simply return the mac of the router itself
+			[.] or do I return the real make of the destination ip
+				- If I return the real make of the destination ip then when performing ping between 2 hosts in the same subnet the dest_mac_addr will be of the destination host rather than the router which by definiation should be dropped
+
+	- How to install sequential flow tables that does all 3 actions
+		* are these below actions can even be implemented locally in a router within its flow table
+		. table 1 ---> changing src mac address
+		. table 2 ---> changing dst mac address
+		. table 3 ---> decrementing ttl	
+	
