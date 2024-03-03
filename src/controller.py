@@ -140,10 +140,76 @@ class Router(RyuApp):
 
         if self.__illegal_packet(pkt):
             return
-
+        
+        print("============= Info =============")
         self.logger.info("❗️\tevent 'packet in' from datapath: {}".format(dpid_to_str(datapath.id)))
+        self.logger.info(f"❗️\tPacket Received from in_port: {in_port}")
+        self.logger.info(f"❗️\t\n{pkt}")
+        print()
+        
+        # if arp we just flood (or we could return the mac associated with us not sure!!!)
+        if pkt.get_protocol(arp):
+            arp_header = pkt.get_protocol(arp)
+            data = ev.msg.data if ev.msg.buffer_id == ofproto.OFP_NO_BUFFER else None
+            actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+            out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=in_port, actions=actions, data=data)
+            self.logger.info("Sending packet out ARP")
+            datapath.send_msg(out)
+            return
 
-        return
+        # if not self.__valid_packet_dst_mac(dpid, pkt, in_port):
+        #     self.logger.info("❗️\tPacket Dropped Destination Mac-Address Mismatch")
+        #     return
+
+
+
+
+        # 2. routing the destination ip address
+        route = self.__ip_destination_lookup(dpid, pkt, in_port)
+        if not route:
+            self.logger.info("!\tPacket couldn't be routed")
+            return
+        
+        # 3. ACTION 1: update the destination mac address of the ethernet header
+        self.__update_destination_mac(dpid, pkt, route)
+
+        # 4. ACTION 2: update the src mac addres of the ethernet header
+        self.__update_source_mac(dpid, pkt, route)
+
+        # 5. ACTION 3: decrement ttl
+        self.__decrement_ttl(pkt)
+
+    def __decrement_ttl(self, pkt):
+        ipv4_header = pkt.get_protocol(ipv4)
+        ipv4_header.ttl = ipv4_header.ttl - 1
+        print(f"\t !packet after ttl update\n{pkt}")
+
+    def __update_source_mac(self, dpid, pkt, route):
+        # getting the mac address of the output port
+        hop, out_port, dest_ip = route
+        src_mac = self.interface_table.get_interface(dpid, out_port)["hw"]
+
+        # updating the ethernet hedder with the new source port
+        ethernet_header = pkt.get_protocol(ethernet)
+        ethernet_header.src = src_mac
+
+        print(f"\t !packet after src update\n{pkt}")
+
+    def __update_destination_mac(self, dpid, pkt, route):
+        ethernet_header = pkt.get_protocol(ethernet)
+
+        # getting the next ip address to forward the packet to
+        hop, out_port, dest_ip = route
+        next_ip = hop
+        if hop == None:
+            next_ip = dest_ip[:-3] # next ip address is the final destination
+
+        print(f"Next Ip Address = {next_ip}")
+
+        next_ip_mac = self.arp_table.get_hw(dpid, next_ip)
+        ethernet_header.dst = next_ip_mac
+        print(f"\t !packet after dst update\n{pkt}")
+
 
     # SUPPORT FUNCTIONS
     # -----------------
@@ -151,6 +217,38 @@ class Router(RyuApp):
     # The functions below are used in the default NAT router. These
     # functions don't directly handle openflow events, but can be
     # called from functions that do
+
+    def __ip_destination_lookup(self, dpid, pkt, in_port):
+        """
+            return None if destination ip address is not found in the routing table, or if the packet is not ipv4
+            returns icmp packet to destination in case destination ip addres not found
+        """
+
+        ipv4_header = pkt.get_protocol(ipv4) # if ipv4_header is not None this implies that eth_type = 2048
+        if not ipv4_header:
+            return None
+
+        route = self.routing_table.get_route(dpid, ipv4_header.dst)
+        if route != None:
+            return route
+
+        # Later you should create and return an icmp packet 3/6 to the sender
+        # icmp_packet = self.__create_icmp_packet()
+
+    def __valid_packet_dst_mac(self, dpid, pkt, in_port):
+        BROADCAST_MAC = "ff:ff:ff:ff:ff:ff"
+        
+        ethernet_header = pkt.get_protocol(ethernet)
+        dst_mac = ethernet_header.dst
+
+        if dst_mac == BROADCAST_MAC:
+            return True
+
+        if dst_mac == self.interface_table.get_interface(dpid, in_port)["hw"]:
+            return True
+
+        print(dst_mac)
+        return False
 
     def __add_flow(self, datapath, priority, match, actions, idle=60, hard=0):
         """
@@ -368,7 +466,7 @@ class StaticRoutingTable(Table):
         for x in self._table[dpid]:
             if any([x['destination'] == ip,
                     ipaddress.ip_address(ip) in ipaddress.ip_network(x['destination'])]):
-                return x['hop'], x['out_port'], x['nat']
+                return x['hop'], x['out_port'], x['destination'] # that is a bug
         return None, None, None
 
 
