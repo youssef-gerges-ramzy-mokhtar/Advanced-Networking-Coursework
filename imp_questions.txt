@@ -5,9 +5,13 @@
 			[.] or do I return the real make of the destination ip
 				- If I return the real make of the destination ip then when performing ping between 2 hosts in the same subnet the dest_mac_addr will be of the destination host rather than the router which by definiation should be dropped
 
-	- How to install sequential flow tables that does all 3 actions
-		* are these below actions can even be implemented locally in a router within its flow table
-		. table 1 ---> changing src mac address
-		. table 2 ---> changing dst mac address
-		. table 3 ---> decrementing ttl	
-	
+
+	- the Flow tables in the routers sometimes drop automatically, I mean they initally have enteries but when trying to print the flow tables again all those enteries are sort of deleted
+
+	- Can this be simplified using wildcards given that if wildcards is used the dst_mac will be non-accurate
+		. *** r2 ------------------------------------------------------------------------
+ cookie=0x0, duration=42.572s, table=0, n_packets=17, n_bytes=1666, idle_timeout=60, priority=1,ip,nw_dst=112.97.37.9 actions=mod_dl_dst:00:cc:cc:cc:cc:aa,mod_dl_src:00:dd:dd:dd:dd:aa,dec_ttl,output:"r2-eth1"
+
+ cookie=0x0, duration=42.504s, table=0, n_packets=17, n_bytes=1666, idle_timeout=60, priority=1,ip,nw_dst=112.97.37.201 actions=mod_dl_dst:00:cc:cc:cc:cc:bb,mod_dl_src:00:dd:dd:dd:dd:aa,dec_ttl,output:"r2-eth1"
+
+ cookie=0x0, duration=42.443s, table=0, n_packets=23, n_bytes=2254, idle_timeout=60, priority=1,ip,nw_dst=1.2.3.4 actions=mod_dl_dst:00:ee:ee:ee:ee:aa,mod_dl_src:00:dd:dd:dd:dd:cc,dec_ttl,output:"r2-eth3"
