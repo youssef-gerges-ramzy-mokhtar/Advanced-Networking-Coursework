@@ -157,12 +157,11 @@ class Router(RyuApp):
             datapath.send_msg(out)
             return
 
-        # if not self.__valid_packet_dst_mac(dpid, pkt, in_port):
-        #     self.logger.info("❗️\tPacket Dropped Destination Mac-Address Mismatch")
-        #     return
+        if not self.__valid_packet_dst_mac(dpid, pkt, in_port):
+            self.logger.info("❗️\tPacket Dropped Destination Mac-Address Mismatch")
+            return
 
-
-
+        actions = []
 
         # 2. routing the destination ip address
         route = self.__ip_destination_lookup(dpid, pkt, in_port)
@@ -171,39 +170,50 @@ class Router(RyuApp):
             return
         
         # 3. ACTION 1: update the destination mac address of the ethernet header
-        self.__update_destination_mac(dpid, pkt, route)
+        self.__update_destination_mac(dpid, pkt, route, parser, actions)
 
         # 4. ACTION 2: update the src mac addres of the ethernet header
-        self.__update_source_mac(dpid, pkt, route)
+        self.__update_source_mac(dpid, pkt, route, parser, actions)
 
         # 5. ACTION 3: decrement ttl
-        self.__decrement_ttl(pkt)
+        self.__decrement_ttl(pkt, parser, actions)
 
         # 6. Send the action back to the router
         pkt.serialize()
         data = pkt.data if ev.msg.buffer_id == ofproto.OFP_NO_BUFFER else None
-        actions = [datapath.ofproto_parser.OFPActionOutput(route[1])]
+        # actions = [datapath.ofproto_parser.OFPActionOutput(route[1])]
+        actions.append(datapath.ofproto_parser.OFPActionOutput(route[1]))
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=in_port, actions=actions, data=data)
         self.logger.info("Sending packet out IPv4")
         datapath.send_msg(out)
 
-    def __decrement_ttl(self, pkt):
-        ipv4_header = pkt.get_protocol(ipv4)
-        ipv4_header.ttl = ipv4_header.ttl - 1
-        print(f"\t !packet after ttl update\n{pkt}")
+        # 7. Insert the a new Flow Entry to the local router
+        # self.__add_flow(datapath, 1, parser.OFPMatch(ipv4_dst=route[2]), actions)
+        # self.__add_flow(datapath, 1, parser.OFPMatch(eth_type=2048, ipv4_dst="10.0.0.1"), actions)
 
-    def __update_source_mac(self, dpid, pkt, route):
+    def __decrement_ttl(self, pkt, parser, actions):
+        # ipv4_header = pkt.get_protocol(ipv4)
+        # ipv4_header.ttl = ipv4_header.ttl - 1
+        # print(f"\t !packet after ttl update\n{pkt}")
+
+        # Adding the change to the list of actions to store in the router local flow table
+        actions.append(parser.OFPActionDecNwTtl())
+
+    def __update_source_mac(self, dpid, pkt, route, parser, actions):
         # getting the mac address of the output port
         hop, out_port, dest_ip = route
         src_mac = self.interface_table.get_interface(dpid, out_port)["hw"]
 
         # updating the ethernet hedder with the new source port
         ethernet_header = pkt.get_protocol(ethernet)
-        ethernet_header.src = src_mac
+        # ethernet_header.src = src_mac
 
         print(f"\t !packet after src update\n{pkt}")
 
-    def __update_destination_mac(self, dpid, pkt, route):
+        # Adding the change to the list of actions to store in the router local flow table
+        actions.append(parser.OFPActionSetField(eth_src=src_mac))
+
+    def __update_destination_mac(self, dpid, pkt, route, parser, actions):
         ethernet_header = pkt.get_protocol(ethernet)
         ipv4_header = pkt.get_protocol(ipv4)
 
@@ -216,10 +226,11 @@ class Router(RyuApp):
         print(f"Next Ip Address = {next_ip}")
 
         next_ip_mac = self.arp_table.get_hw(dpid, next_ip)
-        if next_ip_mac is None:
-            print("=========== Found the Problem ==========")
-        ethernet_header.dst = next_ip_mac
+        # ethernet_header.dst = next_ip_mac
         print(f"\t !packet after dst update\n{pkt}")
+
+        # Adding the change to the list of actions to store in the router local flow table
+        actions.append(parser.OFPActionSetField(eth_dst=next_ip_mac))
 
 
     # SUPPORT FUNCTIONS
