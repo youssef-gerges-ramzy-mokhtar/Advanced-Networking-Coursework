@@ -16,7 +16,13 @@
 
  cookie=0x0, duration=42.443s, table=0, n_packets=23, n_bytes=2254, idle_timeout=60, priority=1,ip,nw_dst=1.2.3.4 actions=mod_dl_dst:00:ee:ee:ee:ee:aa,mod_dl_src:00:dd:dd:dd:dd:cc,dec_ttl,output:"r2-eth3"
 
-	- Is it same to make the idle_timeout=0 for the flow-entry that sends packets to the controller
+	- Is it normal to make the idle_timeout=0 for the flow-entry that sends packets to the controller
 		. as by default it is set to 60 seconds of inactivity
+
+	- If the firewall dropped a packet in a router does it have to return some icmp error
+		. Because when tcp is blocked for h3 and h4 curl never terminates
+
+
+
 
 
