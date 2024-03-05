@@ -108,7 +108,8 @@ class Router(RyuApp):
         dpid = dpid_to_str(datapath.id)
         self.__request_port_info(datapath)
         actions = [datapath.ofproto_parser.OFPActionOutput(datapath.ofproto.OFPP_CONTROLLER, datapath.ofproto.OFPCML_NO_BUFFER)]
-        self.__add_flow(datapath, 0, match, actions, 0)
+        self.__add_flow(datapath=datapath, priority=0, match=match, actions=[], idle=0, go_to_table_id=1, table_id=0)
+        self.__add_flow(datapath, 0, match, actions, idle=0, table_id=1)
         self.logger.info("🤝\thandshake taken place with datapath: {}".format(dpid_to_str(datapath.id)))
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
@@ -147,15 +148,25 @@ class Router(RyuApp):
         self.logger.info(f"❗️\t\n{pkt}")
         print()
         
+        # checking firewarll rules before any further processing
+        if self.__firewall_check(dpid, pkt, parser, datapath) == False:
+            self.logger.info("❗️\tFirewall dropped packet")
+
         # if arp we just flood (or we could return the mac associated with us not sure!!!)
         # could I used hard-coded conditions like checking the dpid directly
+        """
+            Later that should be updated to handle 2 cases
+                1. If we have received IPs (IPv4) within same subnet act like a learning switch (maybe not as you will decrement the ttl and can act as a normal router)
+                    - maybe you can't act normally as IPs within same subnet will net send to the nearest hop see the dst_mac condition will fail and the packet will be dropped
+                2. If we have received arp you can directly retrun the mac address from the ARP Table in the router without flooding
+        """
         if pkt.get_protocol(arp):
-            arp_header = pkt.get_protocol(arp)
             data = ev.msg.data if ev.msg.buffer_id == ofproto.OFP_NO_BUFFER else None
-            actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+            actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_NORMAL)]
             out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=in_port, actions=actions, data=data)
-            self.logger.info("Sending packet out ARP")
+            self.logger.info("Sending packet out ARP or IPs within same subnet")
             datapath.send_msg(out)
+            self.__add_flow(datapath, 1, parser.OFPMatch(eth_type=2054), actions)
             return
 
         # if not self.__valid_packet_dst_mac(dpid, pkt, in_port):
@@ -188,8 +199,79 @@ class Router(RyuApp):
 
         # 7. Insert the a new Flow Entry to the local router
         dest_match = self.__get_dest_match(route, pkt.get_protocol(ipv4).dst)
-        self.__add_flow(datapath, 1, parser.OFPMatch(eth_type=2048, ipv4_dst=dest_match), actions)
+        self.__add_flow(datapath, 1, parser.OFPMatch(eth_type=2048, ipv4_dst=dest_match), actions, table_id=1)
         self.logger.info("!\tFlow Entry Added to Data Path")
+
+    """ Firewall Logic """
+    def __firewall_check(self, dpid, pkt, parser, datapath):
+        rules = self.firewall_rules.get_rules(dpid)
+        if rules == None:
+            return True
+
+        for rule in rules:
+            # preparing the rule
+            self.__prepare_rule(rule)
+            print(rule)
+
+            # maybe you need to handle empty rule["match"]
+            match = parser.OFPMatch(**rule["match"])
+            actions = []
+            table_id = 1
+            if rule["allow"] == False:
+                table_id = None
+
+            self.__add_flow(datapath=datapath, priority=rule["priority"], match=match, actions=actions, go_to_table_id=table_id, table_id=0)
+
+        return True
+    
+    def __prepare_rule(self, rule):
+        match = rule["match"]
+
+        if "ip_proto" in match and not isinstance(match["ip_proto"], int):
+            match["ip_proto"] = int(match["ip_proto"], 16)
+        if "eth_type" in match and not isinstance(match["eth_type"], int):
+            match["eth_type"] = int(match["eth_type"], 16)
+        
+        if "ip_dst" in match:
+            match["ipv4_dst"] = match.pop("ip_dst")
+        if "ip_src" in match:
+            match["ipv4_src"] = match.pop("ip_src")
+            
+        if "ipv4_dst" in match or "ipv4_src" in match or "ip_proto" in match:
+            match["eth_type"] = 2048
+
+        if "tcp_src" in match or "tcp_dst" in match:
+            match["ip_proto"] = 6
+    
+        if "udp_src" in match or "udp_dst" in match:
+            match["ip_proto"] = 17
+
+    # def __add_rule_match(self, rule):
+    #     for key, value in rule["match"].items():
+    #         header, field = self.__get_header(key, pkt)
+    #         if header == None or getattr(header, field) != value:
+    #             return False
+
+    #     return True
+
+
+    # def __get_header(self, match_key, pkt):
+    #     match_split = match_key.split("_")
+    #     header_type = match_split[0]
+        
+    #     header = None
+    #     if header_type == "ip":
+    #         header = pkt.get_protocol(ipv4)
+    #     elif header_type == "tcp":
+    #         header = pkt.get_protocol(tcp)
+    #     elif header_type == "udp":
+    #         header = pkt.get_protocol(udp)
+    #     elif header_type == "eth":
+    #         header = pkt.get_protocol(ethernet)
+        
+    #     return (header, match_split[1])
+
+    """ Firewall Logic """
 
     def __get_dest_match(self, route, pkt_dst_ip):
         hop, out_port, dest_ip = route
@@ -203,7 +285,6 @@ class Router(RyuApp):
             return (dst_ip, "255.255.255.0")
         
         return dst_ip
-
 
     def __decrement_ttl(self, parser, actions):
         # Adding the change to the list of actions
@@ -272,7 +353,7 @@ class Router(RyuApp):
         print(dst_mac)
         return False
 
-    def __add_flow(self, datapath, priority, match, actions, idle=60, hard=0):
+    def __add_flow(self, datapath, priority, match, actions, go_to_table_id=None, idle=60, hard=0, table_id=0):
         """
         Install Flow Table Modification
         Takes a set of OpenFlow Actions and a OpenFlow Packet Match and creates
@@ -284,6 +365,9 @@ class Router(RyuApp):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        if go_to_table_id != None:
+            inst.append(parser.OFPInstructionGotoTable(go_to_table_id))
+
         mod = parser.OFPFlowMod(
             datapath=datapath,
             priority=priority,
@@ -291,6 +375,7 @@ class Router(RyuApp):
             instructions=inst,
             idle_timeout=idle,
             hard_timeout=hard,
+            table_id=table_id
         )
         self.logger.info(
             "✍️\tflow-Mod written to datapath: {}".format(dpid_to_str(datapath.id))
