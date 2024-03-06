@@ -21,6 +21,15 @@
 
 	- If the firewall dropped a packet in a router does it have to return some icmp error
 		. Because when tcp is blocked for h3 and h4 curl never terminates
+		. Also, ask about the default blocking behaviour of the firewall
+		. Is it a good idea to have the firewall rules in the router never destroyed
+
+	- Why does ping replies to the router not received by the controller, although ping is successful
+		. It works only when I manually enter the ip address of the router and that is because a router have multiple ip(s)
+
+
+
+	
 
 
 
