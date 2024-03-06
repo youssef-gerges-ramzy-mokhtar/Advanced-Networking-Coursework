@@ -31,7 +31,7 @@ from ryu.lib.packet.arp import arp
 from ryu.lib.packet.ipv4 import ipv4
 from ryu.lib.packet.ipv6 import ipv6
 from ryu.lib.packet.lldp import lldp
-from ryu.lib.packet.icmp import icmp
+from ryu.lib.packet.icmp import icmp, dest_unreach
 from ryu.lib.packet.tcp import tcp
 from ryu.lib.packet.udp import udp
 from ryu.lib.dpid import dpid_to_str
@@ -40,6 +40,7 @@ import json
 import sys
 import ipaddress
 
+# Creating some class that holds the configuration of router1 hosts subnets 10.0.0.0/24
 
 class Router(RyuApp):
 
@@ -176,9 +177,15 @@ class Router(RyuApp):
         #     self.logger.info("❗️\tPacket Dropped Destination Mac-Address Mismatch")
         #     return
 
-        self.__create_icmp_packet(pkt, 3, 6)
+        icmp_pkt = self.__create_icmp_packet(pkt, 3, 6)
 
         actions = []
+        data = icmp_pkt.data
+        actions.append(datapath.ofproto_parser.OFPActionOutput(in_port))
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=ofproto.OFPP_CONTROLLER, actions=actions, data=data)
+        datapath.send_msg(out)
+        self.logger.info("!\tSending packet out ICMP")
+        return
 
         # 2. routing the destination ip address
         route = self.__ip_destination_lookup(dpid, pkt, in_port)
@@ -275,29 +282,29 @@ class Router(RyuApp):
             ttl = 64,            
             proto = 1, # 1 used to define the icmp protocol
             src = ipv4_header.dst,
-            dst = ipv4_header.src
+            dst = ipv4_header.src,
+            version = 4
         ))
 
         # Adding ICMP Header
-        # data = None
-        # if type == 3:
-        #     data = b'\x00\x00\x00\x00' + ipv4_header.serialize(None, None) + icmp_header.serialize(None, None)[:8] # unused + Internet Header + 64 bits of Original Data Datagram
-        # elif type == 0 or type == 8:
-        #     data = b'' # handle later
-
-        # print(f"Size Byte Array = {data}")
+        data = b""
+        if type == 3:
+            data = dest_unreach(
+                data = ipv4_header.serialize(None, None) + icmp_header.serialize(None, None)[:8] # unused + Internet Header + 64 bits of Original Data Datagram
+            )
+        elif type == 0 or type == 8:
+            None # handle later
 
         icmp_pkt.add_protocol(icmp(
             type_ = type,
             code = code,
             csum = 0, # autmatically generate checksum by ryu
-            data = b"\x00\x00\x00\x00E\x00\x00T\x06\xf6@\x00@\x01\x92\xfd\n\x00\x00\x8cpa%\xc9\x08\x00\x81\x89\x03U\x00\x00"
+            data = data 
         ))
 
         icmp_pkt.serialize()
         print(f"Very very imp: {packet.Packet(icmp_pkt.data)}")
-        # print(f"!!!\tICMP Packet\n{icmp_pkt.data}")
-
+        return icmp_pkt
 
 
     """ Task 2: ICMP Reply Logic """
@@ -344,15 +351,6 @@ class Router(RyuApp):
         # Adding the change to the list of actions
         actions.append(parser.OFPActionSetField(eth_dst=next_ip_mac))
 
-    """ Task 1: End Routing Logic """
-
-    # SUPPORT FUNCTIONS
-    # -----------------
-    # Functions that may help with NAT router implementation
-    # The functions below are used in the default NAT router. These
-    # functions don't directly handle openflow events, but can be
-    # called from functions that do
-
     def __ip_destination_lookup(self, dpid, pkt, in_port):
         """
             return None if destination ip address is not found in the routing table, or if the packet is not ipv4
@@ -368,7 +366,7 @@ class Router(RyuApp):
             return route
 
         # Later you should create and return an icmp packet 3/6 to the sender
-        # icmp_packet = self.__create_icmp_packet()
+
 
     def __valid_packet_dst_mac(self, dpid, pkt, in_port):
         BROADCAST_MAC = "ff:ff:ff:ff:ff:ff"
@@ -384,6 +382,15 @@ class Router(RyuApp):
 
         print(dst_mac)
         return False
+    
+    """ Task 1: End Routing Logic """
+
+    # SUPPORT FUNCTIONS
+    # -----------------
+    # Functions that may help with NAT router implementation
+    # The functions below are used in the default NAT router. These
+    # functions don't directly handle openflow events, but can be
+    # called from functions that do
 
     def __add_flow(self, datapath, priority, match, actions, go_to_table_id=None, idle=60, hard=0, table_id=0):
         """
