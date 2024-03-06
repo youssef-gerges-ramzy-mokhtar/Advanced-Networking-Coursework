@@ -108,8 +108,13 @@ class Router(RyuApp):
         dpid = dpid_to_str(datapath.id)
         self.__request_port_info(datapath)
         actions = [datapath.ofproto_parser.OFPActionOutput(datapath.ofproto.OFPP_CONTROLLER, datapath.ofproto.OFPCML_NO_BUFFER)]
-        self.__add_flow(datapath=datapath, priority=0, match=match, actions=[], idle=0, go_to_table_id=1, table_id=0)
         self.__add_flow(datapath, 0, match, actions, idle=0, table_id=1)
+        
+        # TASK 3: Applying firewall rules before any processing
+        # NOTE: All routing rules and flow-table miss rule are in table 1, and table 1 can only be accessed from the rules defined in table 0. And the rules defined in table 0 are the firewall rules
+        parser = datapath.ofproto_parser
+        self.__apply_firewall_rules(dpid, parser, datapath)
+
         self.logger.info("🤝\thandshake taken place with datapath: {}".format(dpid_to_str(datapath.id)))
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
@@ -147,10 +152,6 @@ class Router(RyuApp):
         self.logger.info(f"❗️\tPacket Received from in_port: {in_port}")
         self.logger.info(f"❗️\t\n{pkt}")
         print()
-        
-        # checking firewarll rules before any further processing
-        if self.__firewall_check(dpid, pkt, parser, datapath) == False:
-            self.logger.info("❗️\tFirewall dropped packet")
 
         # if arp we just flood (or we could return the mac associated with us not sure!!!)
         # could I used hard-coded conditions like checking the dpid directly
@@ -159,6 +160,8 @@ class Router(RyuApp):
                 1. If we have received IPs (IPv4) within same subnet act like a learning switch (maybe not as you will decrement the ttl and can act as a normal router)
                     - maybe you can't act normally as IPs within same subnet will net send to the nearest hop see the dst_mac condition will fail and the packet will be dropped
                 2. If we have received arp you can directly retrun the mac address from the ARP Table in the router without flooding
+                3. As a switch if it received an arp request it should return the mac address from its arp-table
+                4. We simply act as a switch if the src and destination ips are within the same subnet and that includes the ip addresses of the router in that subnet
         """
         if pkt.get_protocol(arp):
             data = ev.msg.data if ev.msg.buffer_id == ofproto.OFP_NO_BUFFER else None
@@ -172,6 +175,8 @@ class Router(RyuApp):
         # if not self.__valid_packet_dst_mac(dpid, pkt, in_port):
         #     self.logger.info("❗️\tPacket Dropped Destination Mac-Address Mismatch")
         #     return
+
+        self.__create_icmp_packet(pkt, 3, 6)
 
         actions = []
 
@@ -202,31 +207,30 @@ class Router(RyuApp):
         self.__add_flow(datapath, 1, parser.OFPMatch(eth_type=2048, ipv4_dst=dest_match), actions, table_id=1)
         self.logger.info("!\tFlow Entry Added to Data Path")
 
-    """ Firewall Logic """
-    def __firewall_check(self, dpid, pkt, parser, datapath):
+    """ Task 3: Firewall Logic """
+    
+    def __apply_firewall_rules(self, dpid, parser, datapath):
         rules = self.firewall_rules.get_rules(dpid)
         if rules == None:
-            return True
+            return
 
         for rule in rules:
             # preparing the rule
             self.__prepare_rule(rule)
-            print(rule)
 
-            # maybe you need to handle empty rule["match"]
+            # Writing the rule to the flow table (0) in the router
             match = parser.OFPMatch(**rule["match"])
             actions = []
             table_id = 1
             if rule["allow"] == False:
                 table_id = None
 
-            self.__add_flow(datapath=datapath, priority=rule["priority"], match=match, actions=actions, go_to_table_id=table_id, table_id=0)
+            self.__add_flow(datapath=datapath, priority=rule["priority"], match=match, actions=actions, go_to_table_id=table_id, idle=0, table_id=0)
 
-        return True
-    
     def __prepare_rule(self, rule):
         match = rule["match"]
 
+        # Fixing Naming and Data Types
         if "ip_proto" in match and not isinstance(match["ip_proto"], int):
             match["ip_proto"] = int(match["ip_proto"], 16)
         if "eth_type" in match and not isinstance(match["eth_type"], int):
@@ -237,41 +241,68 @@ class Router(RyuApp):
         if "ip_src" in match:
             match["ipv4_src"] = match.pop("ip_src")
             
-        if "ipv4_dst" in match or "ipv4_src" in match or "ip_proto" in match:
-            match["eth_type"] = 2048
-
+        # Including Pre-requisite OpenFlow Fields
         if "tcp_src" in match or "tcp_dst" in match:
             match["ip_proto"] = 6
     
         if "udp_src" in match or "udp_dst" in match:
             match["ip_proto"] = 17
 
-    # def __add_rule_match(self, rule):
-    #     for key, value in rule["match"].items():
-    #         header, field = self.__get_header(key, pkt)
-    #         if header == None or getattr(header, field) != value:
-    #             return False
+        if "ipv4_dst" in match or "ipv4_src" in match or "ip_proto" in match:
+            match["eth_type"] = 2048
+    
+    """ Task 3: End Firewall Logic """
 
-    #     return True
+    """ Task 2: ICMP Reply Logic """
 
+    def __create_icmp_packet(self, pkt, type, code):
+        icmp_pkt = packet.Packet()
 
-    # def __get_header(self, match_key, pkt):
-    #     match_split = match_key.split("_")
-    #     header_type = match_split[0]
+        # Extracting old packet headers
+        ethernet_header = pkt.get_protocol(ethernet)
+        ipv4_header = pkt.get_protocol(ipv4)
+        icmp_header = pkt.get_protocol(icmp)
         
-    #     header = None
-    #     if header_type == "ip":
-    #         header = pkt.get_protocol(ipv4)
-    #     elif header_type == "tcp":
-    #         header = pkt.get_protocol(tcp)
-    #     elif header_type == "udp":
-    #         header = pkt.get_protocol(udp)
-    #     elif header_type == "eth":
-    #         header = pkt.get_protocol(ethernet)
-        
-    #     return (header, match_split[1])
+        # Adding Ethernet Header
+        icmp_pkt.add_protocol(ethernet(
+            ethertype = 2048,
+            src = ethernet_header.dst,
+            dst = ethernet_header.src
+        ))
 
-    """ Firewall Logic """
+        # Adding IPv4 Header
+        icmp_pkt.add_protocol(ipv4(
+            ttl = 64,            
+            proto = 1, # 1 used to define the icmp protocol
+            src = ipv4_header.dst,
+            dst = ipv4_header.src
+        ))
+
+        # Adding ICMP Header
+        # data = None
+        # if type == 3:
+        #     data = b'\x00\x00\x00\x00' + ipv4_header.serialize(None, None) + icmp_header.serialize(None, None)[:8] # unused + Internet Header + 64 bits of Original Data Datagram
+        # elif type == 0 or type == 8:
+        #     data = b'' # handle later
+
+        # print(f"Size Byte Array = {data}")
+
+        icmp_pkt.add_protocol(icmp(
+            type_ = type,
+            code = code,
+            csum = 0, # autmatically generate checksum by ryu
+            data = b"\x00\x00\x00\x00E\x00\x00T\x06\xf6@\x00@\x01\x92\xfd\n\x00\x00\x8cpa%\xc9\x08\x00\x81\x89\x03U\x00\x00"
+        ))
+
+        icmp_pkt.serialize()
+        print(f"Very very imp: {packet.Packet(icmp_pkt.data)}")
+        # print(f"!!!\tICMP Packet\n{icmp_pkt.data}")
+
+
+
+    """ Task 2: ICMP Reply Logic """
+
+    """ Task 1: Routing Logic """
 
     def __get_dest_match(self, route, pkt_dst_ip):
         hop, out_port, dest_ip = route
@@ -292,6 +323,7 @@ class Router(RyuApp):
 
     def __update_source_mac(self, dpid, route, parser, actions):
         # getting the mac address of the output port
+        print(f"Route = {route}")
         hop, out_port, dest_ip = route
         src_mac = self.interface_table.get_interface(dpid, out_port)["hw"]
 
@@ -307,12 +339,12 @@ class Router(RyuApp):
         if hop == None:
             next_ip = ipv4_header.dst # next ip address is the final destination
 
-        print(f"Next Ip Address = {next_ip}")
         next_ip_mac = self.arp_table.get_hw(dpid, next_ip)
 
         # Adding the change to the list of actions
         actions.append(parser.OFPActionSetField(eth_dst=next_ip_mac))
 
+    """ Task 1: End Routing Logic """
 
     # SUPPORT FUNCTIONS
     # -----------------
