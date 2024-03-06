@@ -27,7 +27,17 @@
 	- Why does ping replies to the router not received by the controller, although ping is successful
 		. It works only when I manually enter the ip address of the router and that is because a router have multiple ip(s)
 
+	- can a flow table create icmp packets locally
+		. the controller is the one responsible for creating the packets
 
+	- when ttl is equal to zero should the packet be sent back to the controller to construct the icmp packet
+
+
+
+>>>> Document why you have choosen specific values in the code
+	. Add explanation why you have firewall rules never die and how they work
+	. Add explanation why you have the time for the mismatch rule to be 0, else the router will not be able to communicate with the controller
+	. add explanation why do you split the ips for h3 and h4, although in the routing table only a single wildcarded entery is added the reason is that we will modify the dst_mac address of the destination host and that is why we can't add a wildcard
 
 	
 
