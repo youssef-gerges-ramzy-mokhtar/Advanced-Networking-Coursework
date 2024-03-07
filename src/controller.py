@@ -31,7 +31,7 @@ from ryu.lib.packet.arp import arp
 from ryu.lib.packet.ipv4 import ipv4
 from ryu.lib.packet.ipv6 import ipv6
 from ryu.lib.packet.lldp import lldp
-from ryu.lib.packet.icmp import icmp, dest_unreach
+from ryu.lib.packet.icmp import icmp, dest_unreach, echo
 from ryu.lib.packet.tcp import tcp
 from ryu.lib.packet.udp import udp
 from ryu.lib.dpid import dpid_to_str
@@ -177,18 +177,10 @@ class Router(RyuApp):
         #     self.logger.info("❗️\tPacket Dropped Destination Mac-Address Mismatch")
         #     return
 
-        icmp_pkt = self.__create_icmp_packet(pkt, 3, 6)
-
         actions = []
-        data = icmp_pkt.data
-        actions.append(datapath.ofproto_parser.OFPActionOutput(in_port))
-        out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=ofproto.OFPP_CONTROLLER, actions=actions, data=data)
-        datapath.send_msg(out)
-        self.logger.info("!\tSending packet out ICMP")
-        return
 
         # 2. routing the destination ip address
-        route = self.__ip_destination_lookup(dpid, pkt, in_port)
+        route = self.__ip_destination_lookup(dpid, pkt, in_port, datapath, ofproto, ev, parser)
         if not route:
             self.logger.info("!\tPacket couldn't be routed")
             return
@@ -262,7 +254,7 @@ class Router(RyuApp):
 
     """ Task 2: ICMP Reply Logic """
 
-    def __create_icmp_packet(self, pkt, type, code):
+    def __create_icmp_packet(self, pkt, type, code, dpid, router_in_port):
         icmp_pkt = packet.Packet()
 
         # Extracting old packet headers
@@ -272,28 +264,32 @@ class Router(RyuApp):
         
         # Adding Ethernet Header
         icmp_pkt.add_protocol(ethernet(
-            ethertype = 2048,
+            ethertype = 2048, # used to define ipv4 protocol
             src = ethernet_header.dst,
             dst = ethernet_header.src
         ))
 
         # Adding IPv4 Header
+        router_ip_addr = self.interface_table.get_interface(dpid, router_in_port)["ip"]
+        if router_ip_addr == None:
+            raise Exception(f"Could find router ip address for port {router_in_port}")
+        
         icmp_pkt.add_protocol(ipv4(
-            ttl = 64,            
+            ttl = 64,
             proto = 1, # 1 used to define the icmp protocol
-            src = ipv4_header.dst,
+            src = router_ip_addr,
             dst = ipv4_header.src,
             version = 4
         ))
 
         # Adding ICMP Header
         data = b""
-        if type == 3:
+        if type == 3: # dest_unreachable
             data = dest_unreach(
                 data = ipv4_header.serialize(None, None) + icmp_header.serialize(None, None)[:8] # unused + Internet Header + 64 bits of Original Data Datagram
             )
-        elif type == 0 or type == 8:
-            None # handle later
+        elif type == 0 or type == 8: # echo & reply
+            data = icmp_header.data
 
         icmp_pkt.add_protocol(icmp(
             type_ = type,
@@ -303,7 +299,6 @@ class Router(RyuApp):
         ))
 
         icmp_pkt.serialize()
-        print(f"Very very imp: {packet.Packet(icmp_pkt.data)}")
         return icmp_pkt
 
 
@@ -351,22 +346,44 @@ class Router(RyuApp):
         # Adding the change to the list of actions
         actions.append(parser.OFPActionSetField(eth_dst=next_ip_mac))
 
-    def __ip_destination_lookup(self, dpid, pkt, in_port):
+    def __ip_destination_lookup(self, dpid, pkt, in_port, datapath, ofproto, ev, parser):
         """
             return None if destination ip address is not found in the routing table, or if the packet is not ipv4
             returns icmp packet to destination in case destination ip addres not found
         """
 
         ipv4_header = pkt.get_protocol(ipv4) # if ipv4_header is not None this implies that eth_type = 2048
+        icmp_header = pkt.get_protocol(icmp)
         if not ipv4_header:
             return None
 
+        # checking if destination ip address is the router itself and icmp request to router
+        # >>> Problem in this condition handle later
+        print(ipv4_header.dst == self.interface_table.get_interface(dpid, in_port)["ip"])
+        print(icmp_header != None)
+        print(icmp_header.type == 8)
+        if ipv4_header.dst == self.interface_table.get_interface(dpid, in_port)["ip"] and icmp_header != None and icmp_header.type == 8:
+            icmp_pkt = self.__create_icmp_packet(pkt, 0, 0, dpid, in_port)
+            data = icmp_pkt.data
+            actions = [datapath.ofproto_parser.OFPActionOutput(in_port)]
+            out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=ofproto.OFPP_CONTROLLER, actions=actions, data=data)
+            datapath.send_msg(out)
+            self.logger.info("!\tSending packet out ICMP")
+            return None
+
         route = self.routing_table.get_route(dpid, ipv4_header.dst)
-        if route != None:
+        if route[1] != None:
             return route
 
-        # Later you should create and return an icmp packet 3/6 to the sender
-
+        # dest unreachable
+        icmp_pkt = self.__create_icmp_packet(pkt, 3, 0, dpid, in_port)
+        data = icmp_pkt.data
+        actions = [datapath.ofproto_parser.OFPActionOutput(in_port)]
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=ofproto.OFPP_CONTROLLER, actions=actions, data=data)
+        datapath.send_msg(out)
+        self.logger.info("!\tSending packet out ICMP")
+        
+        return None
 
     def __valid_packet_dst_mac(self, dpid, pkt, in_port):
         BROADCAST_MAC = "ff:ff:ff:ff:ff:ff"
