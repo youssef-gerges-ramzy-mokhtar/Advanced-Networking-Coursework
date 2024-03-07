@@ -5,9 +5,6 @@
 			[.] or do I return the real make of the destination ip
 				- If I return the real make of the destination ip then when performing ping between 2 hosts in the same subnet the dest_mac_addr will be of the destination host rather than the router which by definiation should be dropped
 
-
-	- the Flow tables in the routers sometimes drop automatically, I mean they initally have enteries but when trying to print the flow tables again all those enteries are sort of deleted
-
 	- Can this be simplified using wildcards given that if wildcards is used the dst_mac will be non-accurate
 		. *** r2 ------------------------------------------------------------------------
  cookie=0x0, duration=42.572s, table=0, n_packets=17, n_bytes=1666, idle_timeout=60, priority=1,ip,nw_dst=112.97.37.9 actions=mod_dl_dst:00:cc:cc:cc:cc:aa,mod_dl_src:00:dd:dd:dd:dd:aa,dec_ttl,output:"r2-eth1"
@@ -24,24 +21,69 @@
 		. Also, ask about the default blocking behaviour of the firewall
 		. Is it a good idea to have the firewall rules in the router never destroyed
 
-	- Why does ping replies to the router not received by the controller, although ping is successful
-		. It works only when I manually enter the ip address of the router and that is because a router have multiple ip(s)
-
 	- can a flow table create icmp packets locally
 		. the controller is the one responsible for creating the packets
 
 	- when ttl is equal to zero should the packet be sent back to the controller to construct the icmp packet
 
+	- I don't understand the difference icmp dest unreachable codes
+		. if a packet enters a router that is destined for an IP within a subnet unknown to it, WHAT DOES THIS MEAN?
 
+	- I think first entery in the interface table is wrong it should be 112.97.37.1 instead probably
+		. "0000000000000003": [
+    			{
+      				"port": 1,
+      				"hw": "00:dd:dd:dd:dd:aa",
+      				"ip": "112.97.37.9"
+    			},
+    			{
+      				"port": 3,
+      				"hw": "00:dd:dd:dd:dd:cc",
+      				"ip": "1.2.3.1"
+    			},
+    			{
+      				"port": 2,
+      				"hw": "00:dd:dd:dd:dd:bb",
+      				"ip": "88.42.191.2"
+    			}
+  		]
+
+	- If I treat r1 as a switch for traffic in the subnet 10.0.0.0/24 then how can I ping from h1 to r1
+
+	- When I do a ping to a router do I need to check if the src ip address matches any of the router interfaces or only the in_port ip address by which the router received the packet
+		. Example h1 ping 1.2.3.1
+		. the icmp packet will reach r2 via port 2 which has ip 88.42.191.2 so in that case should r2 reply
 
 >>>> Document why you have choosen specific values in the code
 	. Add explanation why you have firewall rules never die and how they work
 	. Add explanation why you have the time for the mismatch rule to be 0, else the router will not be able to communicate with the controller
-	. add explanation why do you split the ips for h3 and h4, although in the routing table only a single wildcarded entery is added the reason is that we will modify the dst_mac address of the destination host and that is why we can't add a wildcard
+	. add explanation why do you split the ips for h3 and h4, although in the routing table only a single wildcarded entery is added the reason is that we will modify the dst_mac address of the destination host and that is why we can't add a wildcard 
 
 	
 
+=========================================================================
+=========================================================================
+=========================================================================
 
+Plan:
+	- add a condition to the router logic that handles the case if it receives a ping request use 0/0
 
+	- Implement task 1 learning layer logic
+		. plan first based on the answers you received for your questions
+			- say datapath id 00..2 acts as a switch for subnet 10.0.0.0/24
+		. plan how should the learning switch work and how 
 
+	- finally go through your questions if something is unimportant delete it
+		. if something is important and you understand it comment it in your code for the marker
+		. if something is new leave it as it is
+
+	- (OPTIONAL) try to reason about how to make the code structure better
+
+	- finally push your questions and code to github
+
+	- (OPTIONAL) check the validity of task 1 + 3 and check the flow-tables
+
+	- (OPTIONAL) comment your code
+
+	- Used additional libraries dest_unreach + echo
 
