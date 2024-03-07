@@ -41,6 +41,17 @@ import sys
 import ipaddress
 
 # Creating some class that holds the configuration of router1 hosts subnets 10.0.0.0/24
+""" Helper Class Storing the info of packets received by the controller """
+class PacketEventInfo:
+    def __init__(self, ev):
+        self.ev = ev
+        self.datapath = self.ev.msg.datapath
+        self.dpid = dpid_to_str(self.datapath.id)
+        self.ofproto = self.datapath.ofproto
+        self.parser = self.datapath.ofproto_parser
+        self.pkt = packet.Packet(self.ev.msg.data)
+        self.in_port = self.ev.msg.match["in_port"]
+
 
 class Router(RyuApp):
 
@@ -104,6 +115,8 @@ class Router(RyuApp):
         Documentation:
         https://ryu.readthedocs.io/en/latest/ofproto_v1_3_ref.html#ryu.ofproto.ofproto_v1_3_parser.OFPSwitchFeatures
         """
+
+        packet_ev_info = PacketEventInfo(ev)
         datapath = ev.msg.datapath
         match = datapath.ofproto_parser.OFPMatch()
         dpid = dpid_to_str(datapath.id)
@@ -482,6 +495,24 @@ class Router(RyuApp):
             self.logger.info(p.hw_addr)
         self.logger.debug("❗️\tevent 'PortDescStatsReply' received!")
     
+
+""" Class handling the router logic -- TASK 1 """
+class RouterLogic():
+    def __init__(self):
+        None
+
+
+""" Class handling the learning switch logic -- TASK 1 """
+class LearningSwitchLogic():
+    None
+
+""" Class mainly responsible for creating icmp packets -- TASK 2 """
+class ICMP():
+    None
+
+""" Class mainly responsible for creating firewall rules -- TASK 3 """
+class FirewallRules:
+    None
 
 """
 Table
