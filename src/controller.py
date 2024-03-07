@@ -394,9 +394,9 @@ class RouterLogic():
 
         # checking if destination ip address is the router itself and icmp request to router
         # >>> Problem in this condition handle later
-        print(ipv4_header.dst == self.interface_table.get_interface(dpid, in_port)["ip"])
-        print(icmp_header != None)
-        print(icmp_header.type == 8)
+        # print(ipv4_header.dst == self.interface_table.get_interface(dpid, in_port)["ip"])
+        # print(icmp_header != None)
+        # print(icmp_header.type == 8)
         if ipv4_header.dst == self.interface_table.get_interface(dpid, in_port)["ip"] and icmp_header != None and icmp_header.type == 8:
             icmp_pkt =  ICMP(self.pkt_ev_info, self.interface_table).create_icmp_packet(0, 0)
             data = icmp_pkt.data
