@@ -5,14 +5,6 @@
 			[.] or do I return the real make of the destination ip
 				- If I return the real make of the destination ip then when performing ping between 2 hosts in the same subnet the dest_mac_addr will be of the destination host rather than the router which by definiation should be dropped
 
-	- Can this be simplified using wildcards given that if wildcards is used the dst_mac will be non-accurate
-		. *** r2 ------------------------------------------------------------------------
- cookie=0x0, duration=42.572s, table=0, n_packets=17, n_bytes=1666, idle_timeout=60, priority=1,ip,nw_dst=112.97.37.9 actions=mod_dl_dst:00:cc:cc:cc:cc:aa,mod_dl_src:00:dd:dd:dd:dd:aa,dec_ttl,output:"r2-eth1"
-
- cookie=0x0, duration=42.504s, table=0, n_packets=17, n_bytes=1666, idle_timeout=60, priority=1,ip,nw_dst=112.97.37.201 actions=mod_dl_dst:00:cc:cc:cc:cc:bb,mod_dl_src:00:dd:dd:dd:dd:aa,dec_ttl,output:"r2-eth1"
-
- cookie=0x0, duration=42.443s, table=0, n_packets=23, n_bytes=2254, idle_timeout=60, priority=1,ip,nw_dst=1.2.3.4 actions=mod_dl_dst:00:ee:ee:ee:ee:aa,mod_dl_src:00:dd:dd:dd:dd:cc,dec_ttl,output:"r2-eth3"
-
 	- Is it normal to make the idle_timeout=0 for the flow-entry that sends packets to the controller
 		. as by default it is set to 60 seconds of inactivity
 
@@ -69,6 +61,13 @@
 
 	- When r1 acts as a switch should it go through the high-priority firewall rules in table 0, or should I place the switch flow-mods with much higher priority than the firewall rules themselves, or just examine the firewall rules anyway and add the flow-mods for the switch to table 1
 
+	- Is it reasonable to only handle the case of (ttl == 1) instead of (ttl <= 1), because I couldn't find anyway to create an OFPMatch that matches based on (ttl <= 1) only strict equality is possible
+
+	- When r1 acts as a switch which should be checked first the switch rules or the ttl rules
+		. In my code the switch rules are checked first before the ttl rules (it that reasonable)
+
+	- I think there might be a bug in interfaces.json for r3 first entry
+
 >>>> Document why you have choosen specific values in the code
 	. Add explanation why you have firewall rules never die and how they work
 	. Add explanation why you have the time for the mismatch rule to be 0, else the router will not be able to communicate with the controller
@@ -80,8 +79,6 @@
 =========================================================================
 
 Plan:
-	- work on task 4
-	
 	- add a condition to the router logic that handles the case if it receives a ping request use 0/0
 
 	- finally go through your questions if something is unimportant delete it
@@ -94,9 +91,9 @@ Plan:
 
 	- (OPTIONAL) comment your code
 
-	- Used additional libraries dest_unreach + echo
+	- Used additional libraries dest_unreach + TimeExceeded
 
-	- implement the methods to receive the pkt_info instead of creating a new object and passing it to the constructor
+	- (OPTIONAL) implement the methods to receive the pkt_info instead of creating a new object and passing it to the constructor
 
 	- You might want to add a flow for mac router mismatch
 
