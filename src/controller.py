@@ -41,8 +41,9 @@ import sys
 import ipaddress
 
 class SwitchConfigurationTable:
-    def __init__(self, arp_table):
+    def __init__(self, arp_table, interface_table):
         self.arp_table = arp_table
+        self.interface_table = interface_table
         self.switch_configuration = {
             "0000000000000002": {
                 "hosts_subnet": "10.0.0.0/24",
@@ -60,6 +61,13 @@ class SwitchConfigurationTable:
         src_mac = ethernet_header.src
         dst_mac = ethernet_header.dst
 
+        # We should route normally if the destination ip address is the one belonging for the router, if we didn't do that all packets going to r1 will be switched instead of routed
+        if self.interface_table.get_interface_by_hw(dpid, dst_mac) != None:
+            return False
+
+        if dst_mac == "ff:ff:ff:ff:ff:ff":
+            return True
+
         # get the ip address of the src and dst mac from the arp table
         src_ip = self.arp_table.get_ip(dpid, src_mac)
         dst_ip = self.arp_table.get_ip(dpid, dst_mac)
@@ -67,13 +75,13 @@ class SwitchConfigurationTable:
             raise Exception("Cannot resolve ip address using ARP Table")
 
         # finally check if both ip address are within the "hosts_subnet"
-        subnet = ipaddress.ip_network(subnet)
+        subnet = ipaddress.ip_network(self.switch_configuration[dpid]["hosts_subnet"])
         if ipaddress.ip_address(src_ip) in subnet and ipaddress.ip_address(dst_ip) in subnet:
             return True
 
         return False
 
-    def get_mac_port_map(dpid, self):
+    def get_mac_port_map(self, dpid):
         return self.switch_configuration[dpid]["mac_port_map"]
 
 # Creating some class that holds the configuration of router1 hosts subnets 10.0.0.0/24
@@ -168,7 +176,7 @@ class Router(RyuApp):
             self.routing_table = StaticRoutingTable()
             self.interface_table = StaticInterfaceTable()
             self.firewall_rules = FirewallRules()
-            self.switch_configuration_table = SwitchConfigurationTable(self.arp_table)
+            self.switch_configuration_table = SwitchConfigurationTable(self.arp_table, self.interface_table)
         except Exception as e:
             self.logger.error("🆘\t{}".format(e))
             sys.exit(1)
@@ -265,16 +273,12 @@ class Router(RyuApp):
         print()
 
         # if arp we just flood (or we could return the mac associated with us not sure!!!)
-        # could I used hard-coded conditions like checking the dpid directly
         """
             Later that should be updated to handle 2 cases
-                1. If we have received IPs (IPv4) within same subnet act like a learning switch (maybe not as you will decrement the ttl and can act as a normal router)
-                    - maybe you can't act normally as IPs within same subnet will net send to the nearest hop see the dst_mac condition will fail and the packet will be dropped
                 2. If we have received arp you can directly retrun the mac address from the ARP Table in the router without flooding
                 3. As a switch if it received an arp request it should return the mac address from its arp-table
-                4. We simply act as a switch if the src and destination ips are within the same subnet and that includes the ip addresses of the router in that subnet
         """
-        if switch_configuration_table.same_subnet(pkt_ev_info.dpid, pkt_ev_info.pkt):
+        if self.switch_configuration_table.same_subnet(pkt_ev_info.dpid, pkt_ev_info.pkt):
             switch_logic = LearningSwitchLogic(pkt_ev_info, self.switch_configuration_table)
             switch_logic.switch()
         else:
@@ -335,10 +339,10 @@ class RouterLogic():
         parser = self.pkt_ev_info.parser
 
         # 1. Checking if destination mac address matches the router input port mac address
-        # if not self.__valid_packet_dst_mac(dpid, pkt, in_port):
-        #     self.logger.info("❗️\tPacket Dropped Destination Mac-Address Mismatch")
-        #     return
-
+        if not self.__valid_packet_dst_mac(dpid, pkt, in_port):
+            print("❗️\tPacket Dropped Destination Mac-Address Mismatch")
+            return
+        
         # 2. routing the destination ip address
         route = self.__ip_destination_lookup(dpid, pkt, in_port, datapath, ofproto, ev, parser)
         if not route:
@@ -493,52 +497,35 @@ class LearningSwitchLogic():
     def switch(self):
         ev = self.pkt_ev_info.ev
         datapath = self.pkt_ev_info.datapath
-        ofproto = self.pkt_ev_info.ofproto
-        parser = self.pkt_ev_info.parser
-        in_port = self.pkt_ev_info.in_port
-
-        data = ev.msg.data if ev.msg.buffer_id == ofproto.OFP_NO_BUFFER else None
-        actions = [parser.OFPActionOutput(ofproto.OFPP_NORMAL)]
-        out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=in_port, actions=actions, data=data)
-        datapath.send_msg(out)
-        RyuUtils.add_flow(
-            datapath = datapath,
-            priority = 1, 
-            match = parser.OFPMatch(eth_type=2054), 
-            actions = actions
-        )
-        
-        print("Sending packet out ARP or IPs within same subnet")
-
-    def switch2(self):
-        ev = self.pkt_ev_info.ev
-        datapath = self.pkt_ev_info.datapath
         dpid = self.pkt_ev_info.dpid
         in_port = self.pkt_ev_info.in_port
         parser = self.pkt_ev_info.parser
+        ofproto = self.pkt_ev_info.ofproto
+        pkt = self.pkt_ev_info.pkt
 
-        ethernet_header = self.pkt.get_protocol(ethernet)
+        ethernet_header = pkt.get_protocol(ethernet)
         if ethernet_header == None:
             raise Exception("Cannot Apply Switching")
 
         src_mac = ethernet_header.src
         dst_mac = ethernet_header.dst
-        mac_port_map = self.switch_configuration_table.get_mac_port_map(self.dpid)
+        mac_port_map = self.switch_configuration_table.get_mac_port_map(dpid)
         mac_port_map[src_mac] = in_port
 
         actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
         if dst_mac in mac_port_map:
             actions = [datapath.ofproto_parser.OFPActionOutput(mac_port_map[dst_mac])]
-            self.__add_flow(
+            RyuUtils.add_flow(
                 datapath = datapath, 
                 priority = 2,
-                parser.OFPMatch(eth_dst=dst_mac),
-                actions
+                match = parser.OFPMatch(eth_dst=dst_mac),
+                actions = actions,
+                table_id = 1
             )
 
         RyuUtils.send_packet_out(
             datapath = datapath,
-            buffer_id = ev.msg.buffer_id,,
+            buffer_id = ev.msg.buffer_id,
             in_port = in_port,
             actions = actions,
             data = ev.msg.data
@@ -664,7 +651,6 @@ class FirewallHandler:
 
         if "ipv4_dst" in match or "ipv4_src" in match or "ip_proto" in match:
             match["eth_type"] = 2048
-    
 
 """
 Table
