@@ -40,6 +40,42 @@ import json
 import sys
 import ipaddress
 
+class SwitchConfigurationTable:
+    def __init__(self, arp_table):
+        self.arp_table = arp_table
+        self.switch_configuration = {
+            "0000000000000002": {
+                "hosts_subnet": "10.0.0.0/24",
+                "mac_port_map": {}
+            }
+        }
+
+    def same_subnet(self, dpid, pkt):
+        # check if the dpid exist in the switch_configuration
+        if dpid not in self.switch_configuration:
+            return False
+
+        # extract the src and dst mac addresses from the ethernet header
+        ethernet_header = pkt.get_protocol(ethernet)
+        src_mac = ethernet_header.src
+        dst_mac = ethernet_header.dst
+
+        # get the ip address of the src and dst mac from the arp table
+        src_ip = self.arp_table.get_ip(dpid, src_mac)
+        dst_ip = self.arp_table.get_ip(dpid, dst_mac)
+        if src_ip == None or dst_ip == None:
+            raise Exception("Cannot resolve ip address using ARP Table")
+
+        # finally check if both ip address are within the "hosts_subnet"
+        subnet = ipaddress.ip_network(subnet)
+        if ipaddress.ip_address(src_ip) in subnet and ipaddress.ip_address(dst_ip) in subnet:
+            return True
+
+        return False
+
+    def get_mac_port_map(dpid, self):
+        return self.switch_configuration[dpid]["mac_port_map"]
+
 # Creating some class that holds the configuration of router1 hosts subnets 10.0.0.0/24
 """ Helper Class Storing the info of packets received by the controller """
 class PacketEventInfo:
@@ -132,6 +168,7 @@ class Router(RyuApp):
             self.routing_table = StaticRoutingTable()
             self.interface_table = StaticInterfaceTable()
             self.firewall_rules = FirewallRules()
+            self.switch_configuration_table = SwitchConfigurationTable(self.arp_table)
         except Exception as e:
             self.logger.error("🆘\t{}".format(e))
             sys.exit(1)
@@ -237,8 +274,8 @@ class Router(RyuApp):
                 3. As a switch if it received an arp request it should return the mac address from its arp-table
                 4. We simply act as a switch if the src and destination ips are within the same subnet and that includes the ip addresses of the router in that subnet
         """
-        if pkt_ev_info.pkt.get_protocol(arp):
-            switch_logic = LearningSwitchLogic(pkt_ev_info)
+        if switch_configuration_table.same_subnet(pkt_ev_info.dpid, pkt_ev_info.pkt):
+            switch_logic = LearningSwitchLogic(pkt_ev_info, self.switch_configuration_table)
             switch_logic.switch()
         else:
             router_logic = RouterLogic(pkt_ev_info, self.interface_table, self.arp_table, self.routing_table)
@@ -449,8 +486,9 @@ class RouterLogic():
 
 """ Class handling the learning switch logic -- TASK 1 """
 class LearningSwitchLogic():
-    def __init__(self, pkt_ev_info):
+    def __init__(self, pkt_ev_info, switch_configuration_table):
         self.pkt_ev_info = pkt_ev_info
+        self.switch_configuration_table = switch_configuration_table
 
     def switch(self):
         ev = self.pkt_ev_info.ev
@@ -471,6 +509,42 @@ class LearningSwitchLogic():
         )
         
         print("Sending packet out ARP or IPs within same subnet")
+
+    def switch2(self):
+        ev = self.pkt_ev_info.ev
+        datapath = self.pkt_ev_info.datapath
+        dpid = self.pkt_ev_info.dpid
+        in_port = self.pkt_ev_info.in_port
+        parser = self.pkt_ev_info.parser
+
+        ethernet_header = self.pkt.get_protocol(ethernet)
+        if ethernet_header == None:
+            raise Exception("Cannot Apply Switching")
+
+        src_mac = ethernet_header.src
+        dst_mac = ethernet_header.dst
+        mac_port_map = self.switch_configuration_table.get_mac_port_map(self.dpid)
+        mac_port_map[src_mac] = in_port
+
+        actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+        if dst_mac in mac_port_map:
+            actions = [datapath.ofproto_parser.OFPActionOutput(mac_port_map[dst_mac])]
+            self.__add_flow(
+                datapath = datapath, 
+                priority = 2,
+                parser.OFPMatch(eth_dst=dst_mac),
+                actions
+            )
+
+        RyuUtils.send_packet_out(
+            datapath = datapath,
+            buffer_id = ev.msg.buffer_id,,
+            in_port = in_port,
+            actions = actions,
+            data = ev.msg.data
+        )
+
+        print("!\tSending Packet out Switching Ethernet")
 
 """ Class mainly responsible for creating icmp packets -- TASK 2 """
 class ICMP():
