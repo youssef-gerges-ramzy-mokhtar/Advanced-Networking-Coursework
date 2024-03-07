@@ -31,7 +31,7 @@ from ryu.lib.packet.arp import arp
 from ryu.lib.packet.ipv4 import ipv4
 from ryu.lib.packet.ipv6 import ipv6
 from ryu.lib.packet.lldp import lldp
-from ryu.lib.packet.icmp import icmp, dest_unreach, echo
+from ryu.lib.packet.icmp import icmp, dest_unreach, TimeExceeded
 from ryu.lib.packet.tcp import tcp
 from ryu.lib.packet.udp import udp
 from ryu.lib.dpid import dpid_to_str
@@ -230,8 +230,8 @@ class Router(RyuApp):
             priority = 0, 
             match = parser.OFPMatch(), 
             actions = actions, 
-            idle=0, 
-            table_id=1
+            idle = 0, 
+            table_id = 1
         )
 
         # TASK 3: Applying firewall rules before any processing
@@ -240,6 +240,16 @@ class Router(RyuApp):
         firewall_handler.apply_firewall_rules()
 
         self.logger.info("🤝\thandshake taken place with datapath: {}".format(dpid_to_str(datapath.id)))
+
+        # Flow entry responsible to handle packets with ttl = 1 #
+        RyuUtils.add_flow(
+            datapath = datapath,
+            priority = 2,
+            match = parser.OFPMatch(eth_type_nxm = 2048, nw_ttl = 1),
+            actions = actions,
+            idle = 0,
+            table_id = 1,
+        )
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
@@ -282,8 +292,15 @@ class Router(RyuApp):
             switch_logic = LearningSwitchLogic(pkt_ev_info, self.switch_configuration_table)
             switch_logic.switch()
         else:
-            router_logic = RouterLogic(pkt_ev_info, self.interface_table, self.arp_table, self.routing_table)
-            router_logic.route_packet()
+            ipv4_header = pkt_ev_info.pkt.get_protocol(ipv4)
+
+            if ipv4_header.ttl <= 1:
+                # ignore packet and send icmp ttl reply
+                ICMP(pkt_ev_info, self.interface_table).send_icmp_packet(11, 0)
+            else:
+                router_logic = RouterLogic(pkt_ev_info, self.interface_table, self.arp_table, self.routing_table)
+                router_logic.route_packet()
+
     
     def __request_port_info(self, datapath):
         """
@@ -439,19 +456,7 @@ class RouterLogic():
         # print(icmp_header != None)
         # print(icmp_header.type == 8)
         if ipv4_header.dst == self.interface_table.get_interface(dpid, in_port)["ip"] and icmp_header != None and icmp_header.type == 8:
-            icmp_pkt =  ICMP(self.pkt_ev_info, self.interface_table).create_icmp_packet(0, 0)
-            data = icmp_pkt.data
-            actions = [datapath.ofproto_parser.OFPActionOutput(in_port)]
-            
-            RyuUtils.send_packet_out(
-                datapath = datapath,
-                buffer_id = ev.msg.buffer_id,
-                in_port = ofproto.OFPP_CONTROLLER,
-                actions = actions,
-                data = data
-            )
-            print("!\tSending packet out ICMP")
-            
+            ICMP(self.pkt_ev_info, self.interface_table).send_icmp_packet(0, 0)
             return None
 
         route = self.routing_table.get_route(dpid, ipv4_header.dst)
@@ -459,18 +464,7 @@ class RouterLogic():
             return route
 
         # dest unreachable
-        icmp_pkt =  ICMP(self.pkt_ev_info, self.interface_table).create_icmp_packet(3, 0)
-        data = icmp_pkt.data
-        actions = [datapath.ofproto_parser.OFPActionOutput(in_port)]
-        RyuUtils.send_packet_out(
-            datapath=datapath,
-            buffer_id=ev.msg.buffer_id,
-            in_port=ofproto.OFPP_CONTROLLER,
-            actions=actions,
-            data=data
-        )
-        print("!\tSending packet out ICMP")
-        
+        ICMP(self.pkt_ev_info, self.interface_table).send_icmp_packet(3, 0)
         return None
 
     def __valid_packet_dst_mac(self, dpid, pkt, in_port):
@@ -517,7 +511,7 @@ class LearningSwitchLogic():
             actions = [datapath.ofproto_parser.OFPActionOutput(mac_port_map[dst_mac])]
             RyuUtils.add_flow(
                 datapath = datapath, 
-                priority = 2,
+                priority = 3,
                 match = parser.OFPMatch(eth_dst=dst_mac),
                 actions = actions,
                 table_id = 1
@@ -550,6 +544,7 @@ class ICMP():
         ethernet_header = pkt.get_protocol(ethernet)
         ipv4_header = pkt.get_protocol(ipv4)
         icmp_header = pkt.get_protocol(icmp)
+        udp_header = pkt.get_protocol(udp)
         
         # Adding Ethernet Header
         icmp_pkt.add_protocol(ethernet(
@@ -575,10 +570,14 @@ class ICMP():
         data = b""
         if type == 3: # dest_unreachable
             data = dest_unreach(
-                data = ipv4_header.serialize(None, None) + icmp_header.serialize(None, None)[:8] # unused + Internet Header + 64 bits of Original Data Datagram
+                data = ipv4_header.serialize(None, None) + icmp_header.serialize(None, None)[:8] # Internet Header + 64 bits of Original Data Datagram
             )
         elif type == 0 or type == 8: # echo & reply
             data = icmp_header.data
+        elif type == 11: # ttl
+            data = TimeExceeded(
+                data = ipv4_header.serialize(None, None) + udp_header.serialize(None, None)[:8] # Internet Header + 64 bits of Original Data Datagram
+            )
 
         icmp_pkt.add_protocol(icmp(
             type_ = type,
@@ -589,6 +588,20 @@ class ICMP():
 
         icmp_pkt.serialize()
         return icmp_pkt
+
+    def send_icmp_packet(self, type, code):
+        icmp_pkt = self.create_icmp_packet(type, code)
+        actions = [self.pkt_ev_info.parser.OFPActionOutput(self.pkt_ev_info.in_port)]
+
+        RyuUtils.send_packet_out(
+            datapath = self.pkt_ev_info.datapath,
+            buffer_id = self.pkt_ev_info.ev.msg.buffer_id,
+            in_port = self.pkt_ev_info.ofproto.OFPP_CONTROLLER,
+            actions = actions,
+            data = icmp_pkt.data
+        )
+
+        print("!\tSending ICMP Packet Out")
 
 """ Class mainly responsible for creating firewall rules -- TASK 3 """
 class FirewallHandler:
