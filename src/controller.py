@@ -67,7 +67,7 @@ class RyuUtils:
     # called from functions that do
 
     @staticmethod
-    def __add_flow(datapath, priority, match, actions, go_to_table_id=None, idle=60, hard=0, table_id=0):
+    def add_flow(datapath, priority, match, actions, go_to_table_id=None, idle=60, hard=0, table_id=0):
         """
         Install Flow Table Modification
         Takes a set of OpenFlow Actions and a OpenFlow Packet Match and creates
@@ -91,13 +91,14 @@ class RyuUtils:
             hard_timeout=hard,
             table_id=table_id
         )
-        self.logger.info(
+        
+        print(
             "✍️\tflow-Mod written to datapath: {}".format(dpid_to_str(datapath.id))
         )
         datapath.send_msg(mod)
 
     @staticmethod
-    def __illegal_packet(pkt, log=False):
+    def illegal_packet(pkt, log=False):
         """
         Illegal Packet Check
         Checks to see if a packet is allowed to be forwarded. You should use
@@ -106,13 +107,13 @@ class RyuUtils:
         for proto in RyuUtils.ILLEGAL_PROTOCOLS:
             if pkt.get_protocol(proto):
                 if log:
-                    self.logger.debug("🚨\tpacket with illegal protocol seen: {}".format(proto.__name__))
+                    print("🚨\tpacket with illegal protocol seen: {}".format(proto.__name__))
                 return True
         return False
 
     @staticmethod
-    def __send_packet_out(datapath, buffer_id, in_port, actions, data):
-        out = parser.OFPPacketOut(datapath=datapath, buffer_id=buffer_id, in_port=in_port, actions=actions, data=data)
+    def send_packet_out(datapath, buffer_id, in_port, actions, data):
+        out = datapath.ofproto_parser.OFPPacketOut(datapath=datapath, buffer_id=buffer_id, in_port=in_port, actions=actions, data=data)
         datapath.send_msg(out)
 
 """ RyuApp Class """
@@ -172,22 +173,26 @@ class Router(RyuApp):
         Documentation:
         https://ryu.readthedocs.io/en/latest/ofproto_v1_3_ref.html#ryu.ofproto.ofproto_v1_3_parser.OFPSwitchFeatures
         """
-        packet_ev_info = PacketEventInfo(ev)
-        self.__request_port_info(packet_ev_info.datapath)
-        actions = [packet_ev_info.parser.OFPActionOutput(packet_ev_info.ofproto.OFPP_CONTROLLER, packet_ev_info.ofproto.OFPCML_NO_BUFFER)]
-        RyuUtils.__add_flow(
-            datapath = packet_ev_info.datapath, 
+        datapath = ev.msg.datapath
+        parser = datapath.ofproto_parser
+        ofproto = datapath.ofproto
+        dpid = dpid_to_str(datapath.id)
+        
+        self.__request_port_info(datapath)
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+        RyuUtils.add_flow(
+            datapath = datapath, 
             priority = 0, 
-            match = packet_ev_info.parser.OFPMatch(), 
+            match = parser.OFPMatch(), 
             actions = actions, 
             idle=0, 
             table_id=1
         )
-        
+
         # TASK 3: Applying firewall rules before any processing
         # NOTE: All routing rules and flow-table miss rule are in table 1, and table 1 can only be accessed from the rules defined in table 0. And the rules defined in table 0 are the firewall rules
-        firewall_rules = FirewallRules(pkt_ev_info, self.firewall_rules)
-        firewall_rules.__apply_firewall_rules()
+        firewall_handler = FirewallHandler(dpid, parser, datapath, self.firewall_rules)
+        firewall_handler.apply_firewall_rules()
 
         self.logger.info("🤝\thandshake taken place with datapath: {}".format(dpid_to_str(datapath.id)))
 
@@ -213,13 +218,13 @@ class Router(RyuApp):
         """
         pkt_ev_info = PacketEventInfo(ev)
 
-        if RyuUtils.__illegal_packet(pkt_ev_info.pkt):
+        if RyuUtils.illegal_packet(pkt_ev_info.pkt):
             return
         
         print("============= Info =============")
-        self.logger.info("❗️\tevent 'packet in' from datapath: {}".format(dpid_to_str(datapath.id)))
-        self.logger.info(f"❗️\tPacket Received from in_port: {in_port}")
-        self.logger.info(f"❗️\t\n{pkt}")
+        self.logger.info("❗️\tevent 'packet in' from datapath: {}".format(dpid_to_str(pkt_ev_info.datapath.id)))
+        self.logger.info(f"❗️\tPacket Received from in_port: {pkt_ev_info.in_port}")
+        self.logger.info(f"❗️\t\n{pkt_ev_info.pkt}")
         print()
 
         # if arp we just flood (or we could return the mac associated with us not sure!!!)
@@ -232,12 +237,12 @@ class Router(RyuApp):
                 3. As a switch if it received an arp request it should return the mac address from its arp-table
                 4. We simply act as a switch if the src and destination ips are within the same subnet and that includes the ip addresses of the router in that subnet
         """
-        if pkt.get_protocol(arp):
+        if pkt_ev_info.pkt.get_protocol(arp):
             switch_logic = LearningSwitchLogic(pkt_ev_info)
             switch_logic.switch()
         else:
             router_logic = RouterLogic(pkt_ev_info, self.interface_table, self.arp_table, self.routing_table)
-            router_logic.route()
+            router_logic.route_packet()
     
     def __request_port_info(self, datapath):
         """
@@ -278,7 +283,7 @@ class RouterLogic():
         self.arp_table = arp_table
         self.routing_table = routing_table
 
-    def route_packet():
+    def route_packet(self):
         """
         Routes Packet and create flow-mods in the local router
         """
@@ -316,7 +321,7 @@ class RouterLogic():
         data = pkt.data if ev.msg.buffer_id == ofproto.OFP_NO_BUFFER else None
         actions.append(datapath.ofproto_parser.OFPActionOutput(route[1]))
         
-        RyuUtils.__send_packet_out(
+        RyuUtils.send_packet_out(
             datapath = datapath,
             buffer_id = ev.msg.buffer_id,
             in_port = in_port,
@@ -327,7 +332,7 @@ class RouterLogic():
 
         # 7. Insert the a new Flow Entry to the local router
         dest_match = self.__get_dest_match(route, pkt.get_protocol(ipv4).dst)
-        RyuUtils.__add_flow(
+        RyuUtils.add_flow(
             datapath = datapath, 
             priority = 1, 
             match = parser.OFPMatch(eth_type=2048, ipv4_dst=dest_match), 
@@ -393,18 +398,18 @@ class RouterLogic():
         print(icmp_header != None)
         print(icmp_header.type == 8)
         if ipv4_header.dst == self.interface_table.get_interface(dpid, in_port)["ip"] and icmp_header != None and icmp_header.type == 8:
-            icmp_pkt =  ICMP(self.pkt_ev_info).__create_icmp_packet(0, 0)
+            icmp_pkt =  ICMP(self.pkt_ev_info, self.interface_table).create_icmp_packet(0, 0)
             data = icmp_pkt.data
             actions = [datapath.ofproto_parser.OFPActionOutput(in_port)]
             
-            RyuUtils.__send_packet_out(
+            RyuUtils.send_packet_out(
                 datapath = datapath,
                 buffer_id = ev.msg.buffer_id,
                 in_port = ofproto.OFPP_CONTROLLER,
                 actions = actions,
                 data = data
             )
-            self.logger.info("!\tSending packet out ICMP")
+            print("!\tSending packet out ICMP")
             
             return None
 
@@ -413,17 +418,17 @@ class RouterLogic():
             return route
 
         # dest unreachable
-        icmp_pkt =  ICMP(self.pkt_ev_info).__create_icmp_packet(3, 0)
+        icmp_pkt =  ICMP(self.pkt_ev_info, self.interface_table).create_icmp_packet(3, 0)
         data = icmp_pkt.data
         actions = [datapath.ofproto_parser.OFPActionOutput(in_port)]
-        RyuUtils.__send_packet_out(
+        RyuUtils.send_packet_out(
             datapath=datapath,
             buffer_id=ev.msg.buffer_id,
             in_port=ofproto.OFPP_CONTROLLER,
             actions=actions,
             data=data
         )
-        self.logger.info("!\tSending packet out ICMP")
+        print("!\tSending packet out ICMP")
         
         return None
 
@@ -447,7 +452,7 @@ class LearningSwitchLogic():
     def __init__(self, pkt_ev_info):
         self.pkt_ev_info = pkt_ev_info
 
-    def switch():
+    def switch(self):
         ev = self.pkt_ev_info.ev
         datapath = self.pkt_ev_info.datapath
         ofproto = self.pkt_ev_info.ofproto
@@ -458,21 +463,22 @@ class LearningSwitchLogic():
         actions = [parser.OFPActionOutput(ofproto.OFPP_NORMAL)]
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=in_port, actions=actions, data=data)
         datapath.send_msg(out)
-        RyuUtils.__add_flow(
+        RyuUtils.add_flow(
             datapath = datapath,
             priority = 1, 
             match = parser.OFPMatch(eth_type=2054), 
             actions = actions
         )
         
-        self.logger.info("Sending packet out ARP or IPs within same subnet")
+        print("Sending packet out ARP or IPs within same subnet")
 
 """ Class mainly responsible for creating icmp packets -- TASK 2 """
 class ICMP():
-    def __init__(self, pkt_ev_info):
+    def __init__(self, pkt_ev_info, interface_table):
         self.pkt_ev_info = pkt_ev_info
+        self.interface_table = interface_table
 
-    def __create_icmp_packet(self, type, code):
+    def create_icmp_packet(self, type, code):
         pkt = self.pkt_ev_info.pkt
         dpid = self.pkt_ev_info.dpid
         router_in_port = self.pkt_ev_info.in_port
@@ -524,15 +530,17 @@ class ICMP():
         return icmp_pkt
 
 """ Class mainly responsible for creating firewall rules -- TASK 3 """
-class FirewallRules:
-    def __init__(self, pkt_ev_info, firewall_rules):
-        self.pkt_ev_info = pkt_ev_info
+class FirewallHandler:
+    def __init__(self, dpid, parser, datapath, firewall_rules):
+        self.dpid = dpid
+        self.parser = parser
+        self.datapath = datapath
         self.firewall_rules = firewall_rules
 
-    def __apply_firewall_rules(self):
-        dpid = self.pkt_ev_info.dpid
-        parser = self.pkt_ev_info.parser
-        datapath = self.pkt_ev_info.datapath
+    def apply_firewall_rules(self):
+        dpid = self.dpid
+        parser = self.parser
+        datapath = self.datapath
 
         rules = self.firewall_rules.get_rules(dpid)
         if rules == None:
@@ -549,7 +557,7 @@ class FirewallRules:
             if rule["allow"] == False:
                 table_id = None
 
-            RyuUtils.__add_flow(
+            RyuUtils.add_flow(
                 datapath = datapath, 
                 priority = rule["priority"], 
                 match = match, 
