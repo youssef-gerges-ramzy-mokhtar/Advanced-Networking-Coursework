@@ -52,15 +52,72 @@ class PacketEventInfo:
         self.pkt = packet.Packet(self.ev.msg.data)
         self.in_port = self.ev.msg.match["in_port"]
 
-
-class Router(RyuApp):
-
-    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
-
+""" Class containing some helper static methods """
+class RyuUtils:
     # A set of protocols that do not need to be forwarded in the SCC365 work.
     # This is not for any particular technical reason other than the fact they
     # can make your controller harder to debug.
     ILLEGAL_PROTOCOLS = [ipv6, lldp]
+
+    # SUPPORT FUNCTIONS
+    # -----------------
+    # Functions that may help with NAT router implementation
+    # The functions below are used in the default NAT router. These
+    # functions don't directly handle openflow events, but can be
+    # called from functions that do
+
+    @staticmethod
+    def __add_flow(datapath, priority, match, actions, go_to_table_id=None, idle=60, hard=0, table_id=0):
+        """
+        Install Flow Table Modification
+        Takes a set of OpenFlow Actions and a OpenFlow Packet Match and creates
+        the corresponding Flow-Mod. This is then installed to a given datapath
+        at a given priority.
+        Documentation:
+        https://ryu.readthedocs.io/en/latest/ofproto_v1_3_ref.html#ryu.ofproto.ofproto_v1_3_parser.OFPFlowMod
+        """
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        if go_to_table_id != None:
+            inst.append(parser.OFPInstructionGotoTable(go_to_table_id))
+
+        mod = parser.OFPFlowMod(
+            datapath=datapath,
+            priority=priority,
+            match=match,
+            instructions=inst,
+            idle_timeout=idle,
+            hard_timeout=hard,
+            table_id=table_id
+        )
+        self.logger.info(
+            "✍️\tflow-Mod written to datapath: {}".format(dpid_to_str(datapath.id))
+        )
+        datapath.send_msg(mod)
+
+    @staticmethod
+    def __illegal_packet(pkt, log=False):
+        """
+        Illegal Packet Check
+        Checks to see if a packet is allowed to be forwarded. You should use
+        these pre-populated values in your coursework to avoid issues.
+        """
+        for proto in RyuUtils.ILLEGAL_PROTOCOLS:
+            if pkt.get_protocol(proto):
+                if log:
+                    self.logger.debug("🚨\tpacket with illegal protocol seen: {}".format(proto.__name__))
+                return True
+        return False
+
+    @staticmethod
+    def __send_packet_out(datapath, buffer_id, in_port, actions, data):
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=buffer_id, in_port=in_port, actions=actions, data=data)
+        datapath.send_msg(out)
+
+""" RyuApp Class """
+class Router(RyuApp):
+    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     def __init__(self, *args, **kwargs):
         """
@@ -115,19 +172,22 @@ class Router(RyuApp):
         Documentation:
         https://ryu.readthedocs.io/en/latest/ofproto_v1_3_ref.html#ryu.ofproto.ofproto_v1_3_parser.OFPSwitchFeatures
         """
-
         packet_ev_info = PacketEventInfo(ev)
-        datapath = ev.msg.datapath
-        match = datapath.ofproto_parser.OFPMatch()
-        dpid = dpid_to_str(datapath.id)
-        self.__request_port_info(datapath)
-        actions = [datapath.ofproto_parser.OFPActionOutput(datapath.ofproto.OFPP_CONTROLLER, datapath.ofproto.OFPCML_NO_BUFFER)]
-        self.__add_flow(datapath, 0, match, actions, idle=0, table_id=1)
+        self.__request_port_info(packet_ev_info.datapath)
+        actions = [packet_ev_info.parser.OFPActionOutput(packet_ev_info.ofproto.OFPP_CONTROLLER, packet_ev_info.ofproto.OFPCML_NO_BUFFER)]
+        RyuUtils.__add_flow(
+            datapath = packet_ev_info.datapath, 
+            priority = 0, 
+            match = packet_ev_info.parser.OFPMatch(), 
+            actions = actions, 
+            idle=0, 
+            table_id=1
+        )
         
         # TASK 3: Applying firewall rules before any processing
         # NOTE: All routing rules and flow-table miss rule are in table 1, and table 1 can only be accessed from the rules defined in table 0. And the rules defined in table 0 are the firewall rules
-        parser = datapath.ofproto_parser
-        self.__apply_firewall_rules(dpid, parser, datapath)
+        firewall_rules = FirewallRules(pkt_ev_info, self.firewall_rules)
+        firewall_rules.__apply_firewall_rules()
 
         self.logger.info("🤝\thandshake taken place with datapath: {}".format(dpid_to_str(datapath.id)))
 
@@ -151,14 +211,9 @@ class Router(RyuApp):
         Packet Out Message Documentation:
         https://ryu.readthedocs.io/en/latest/ofproto_v1_3_ref.html#ryu.ofproto.ofproto_v1_3_parser.OFPPacketOut
         """
-        datapath = ev.msg.datapath
-        dpid = dpid_to_str(datapath.id)
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
-        pkt = packet.Packet(ev.msg.data)
-        in_port = ev.msg.match["in_port"]
+        pkt_ev_info = PacketEventInfo(ev)
 
-        if self.__illegal_packet(pkt):
+        if RyuUtils.__illegal_packet(pkt_ev_info.pkt):
             return
         
         print("============= Info =============")
@@ -178,24 +233,74 @@ class Router(RyuApp):
                 4. We simply act as a switch if the src and destination ips are within the same subnet and that includes the ip addresses of the router in that subnet
         """
         if pkt.get_protocol(arp):
-            data = ev.msg.data if ev.msg.buffer_id == ofproto.OFP_NO_BUFFER else None
-            actions = [datapath.ofproto_parser.OFPActionOutput(ofproto.OFPP_NORMAL)]
-            out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=in_port, actions=actions, data=data)
-            self.logger.info("Sending packet out ARP or IPs within same subnet")
-            datapath.send_msg(out)
-            self.__add_flow(datapath, 1, parser.OFPMatch(eth_type=2054), actions)
-            return
+            switch_logic = LearningSwitchLogic(pkt_ev_info)
+            switch_logic.switch()
+        else:
+            router_logic = RouterLogic(pkt_ev_info, self.interface_table, self.arp_table, self.routing_table)
+            router_logic.route()
+    
+    def __request_port_info(self, datapath):
+        """
+        Request Datapath Port Descriptions
+        Create a Port Desc Stats Request and send it to the given datapath. The
+        response for this will come in asynchronously in the function that
+        handles the event `EventOFPPortDescStatsReply`.
+        Documentation:
+        https://ryu.readthedocs.io/en/latest/ofproto_v1_3_ref.html#ryu.ofproto.ofproto_v1_3_parser.OFPPortDescStatsRequest
+        """
+        parser = datapath.ofproto_parser
+        req = parser.OFPPortDescStatsRequest(datapath, 0)
+        datapath.send_msg(req)
+        self.logger.debug(
+            "📤\trequesting datapath port information: {}".format(
+                dpid_to_str(datapath.id)
+            )
+        )
 
+    @set_ev_cls(ofp_event.EventOFPPortDescStatsReply, MAIN_DISPATCHER)
+    def __port_info_handler(self, ev):
+        """
+        Handle a OFPPortDescStatsReply event
+        Documentation:
+        https://ryu.readthedocs.io/en/latest/ofproto_v1_3_ref.html#ryu.ofproto.ofproto_v1_3_parser.OFPPortDescStatsReply
+        """
+        dpid = dpid_to_str(ev.msg.datapath.id)
+        for p in ev.msg.body:
+            self.logger.info(p.port_no)
+            self.logger.info(p.hw_addr)
+        self.logger.debug("❗️\tevent 'PortDescStatsReply' received!")
+    
+""" Class handling the router logic -- TASK 1 """
+class RouterLogic():
+    def __init__(self, pkt_ev_info, interface_table, arp_table, routing_table):
+        self.pkt_ev_info = pkt_ev_info
+        self.interface_table = interface_table
+        self.arp_table = arp_table
+        self.routing_table = routing_table
+
+    def route_packet():
+        """
+        Routes Packet and create flow-mods in the local router
+        """
+        actions = []
+
+        dpid = self.pkt_ev_info.dpid
+        pkt = self.pkt_ev_info.pkt
+        in_port = self.pkt_ev_info.in_port
+        datapath = self.pkt_ev_info.datapath
+        ofproto = self.pkt_ev_info.ofproto
+        ev = self.pkt_ev_info.ev
+        parser = self.pkt_ev_info.parser
+
+        # 1. Checking if destination mac address matches the router input port mac address
         # if not self.__valid_packet_dst_mac(dpid, pkt, in_port):
         #     self.logger.info("❗️\tPacket Dropped Destination Mac-Address Mismatch")
         #     return
 
-        actions = []
-
         # 2. routing the destination ip address
         route = self.__ip_destination_lookup(dpid, pkt, in_port, datapath, ofproto, ev, parser)
         if not route:
-            self.logger.info("!\tPacket couldn't be routed")
+            print("!\tPacket couldn't be routed")
             return
         
         # 3. ACTION 1: update the destination mac address of the ethernet header
@@ -210,114 +315,26 @@ class Router(RyuApp):
         # 6. Send the action back to the router
         data = pkt.data if ev.msg.buffer_id == ofproto.OFP_NO_BUFFER else None
         actions.append(datapath.ofproto_parser.OFPActionOutput(route[1]))
-        out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=in_port, actions=actions, data=data)
-        datapath.send_msg(out)
-        self.logger.info("!\tSending packet out IPv4")
+        
+        RyuUtils.__send_packet_out(
+            datapath = datapath,
+            buffer_id = ev.msg.buffer_id,
+            in_port = in_port,
+            actions = actions,
+            data = data
+        )
+        print("!\tSending packet out IPv4")
 
         # 7. Insert the a new Flow Entry to the local router
         dest_match = self.__get_dest_match(route, pkt.get_protocol(ipv4).dst)
-        self.__add_flow(datapath, 1, parser.OFPMatch(eth_type=2048, ipv4_dst=dest_match), actions, table_id=1)
-        self.logger.info("!\tFlow Entry Added to Data Path")
-
-    """ Task 3: Firewall Logic """
-    
-    def __apply_firewall_rules(self, dpid, parser, datapath):
-        rules = self.firewall_rules.get_rules(dpid)
-        if rules == None:
-            return
-
-        for rule in rules:
-            # preparing the rule
-            self.__prepare_rule(rule)
-
-            # Writing the rule to the flow table (0) in the router
-            match = parser.OFPMatch(**rule["match"])
-            actions = []
-            table_id = 1
-            if rule["allow"] == False:
-                table_id = None
-
-            self.__add_flow(datapath=datapath, priority=rule["priority"], match=match, actions=actions, go_to_table_id=table_id, idle=0, table_id=0)
-
-    def __prepare_rule(self, rule):
-        match = rule["match"]
-
-        # Fixing Naming and Data Types
-        if "ip_proto" in match and not isinstance(match["ip_proto"], int):
-            match["ip_proto"] = int(match["ip_proto"], 16)
-        if "eth_type" in match and not isinstance(match["eth_type"], int):
-            match["eth_type"] = int(match["eth_type"], 16)
-        
-        if "ip_dst" in match:
-            match["ipv4_dst"] = match.pop("ip_dst")
-        if "ip_src" in match:
-            match["ipv4_src"] = match.pop("ip_src")
-            
-        # Including Pre-requisite OpenFlow Fields
-        if "tcp_src" in match or "tcp_dst" in match:
-            match["ip_proto"] = 6
-    
-        if "udp_src" in match or "udp_dst" in match:
-            match["ip_proto"] = 17
-
-        if "ipv4_dst" in match or "ipv4_src" in match or "ip_proto" in match:
-            match["eth_type"] = 2048
-    
-    """ Task 3: End Firewall Logic """
-
-    """ Task 2: ICMP Reply Logic """
-
-    def __create_icmp_packet(self, pkt, type, code, dpid, router_in_port):
-        icmp_pkt = packet.Packet()
-
-        # Extracting old packet headers
-        ethernet_header = pkt.get_protocol(ethernet)
-        ipv4_header = pkt.get_protocol(ipv4)
-        icmp_header = pkt.get_protocol(icmp)
-        
-        # Adding Ethernet Header
-        icmp_pkt.add_protocol(ethernet(
-            ethertype = 2048, # used to define ipv4 protocol
-            src = ethernet_header.dst,
-            dst = ethernet_header.src
-        ))
-
-        # Adding IPv4 Header
-        router_ip_addr = self.interface_table.get_interface(dpid, router_in_port)["ip"]
-        if router_ip_addr == None:
-            raise Exception(f"Could find router ip address for port {router_in_port}")
-        
-        icmp_pkt.add_protocol(ipv4(
-            ttl = 64,
-            proto = 1, # 1 used to define the icmp protocol
-            src = router_ip_addr,
-            dst = ipv4_header.src,
-            version = 4
-        ))
-
-        # Adding ICMP Header
-        data = b""
-        if type == 3: # dest_unreachable
-            data = dest_unreach(
-                data = ipv4_header.serialize(None, None) + icmp_header.serialize(None, None)[:8] # unused + Internet Header + 64 bits of Original Data Datagram
-            )
-        elif type == 0 or type == 8: # echo & reply
-            data = icmp_header.data
-
-        icmp_pkt.add_protocol(icmp(
-            type_ = type,
-            code = code,
-            csum = 0, # autmatically generate checksum by ryu
-            data = data 
-        ))
-
-        icmp_pkt.serialize()
-        return icmp_pkt
-
-
-    """ Task 2: ICMP Reply Logic """
-
-    """ Task 1: Routing Logic """
+        RyuUtils.__add_flow(
+            datapath = datapath, 
+            priority = 1, 
+            match = parser.OFPMatch(eth_type=2048, ipv4_dst=dest_match), 
+            actions = actions, 
+            table_id=1
+        )
+        print("!\tFlow Entry Added to Data Path")
 
     def __get_dest_match(self, route, pkt_dst_ip):
         hop, out_port, dest_ip = route
@@ -376,12 +393,19 @@ class Router(RyuApp):
         print(icmp_header != None)
         print(icmp_header.type == 8)
         if ipv4_header.dst == self.interface_table.get_interface(dpid, in_port)["ip"] and icmp_header != None and icmp_header.type == 8:
-            icmp_pkt = self.__create_icmp_packet(pkt, 0, 0, dpid, in_port)
+            icmp_pkt =  ICMP(self.pkt_ev_info).__create_icmp_packet(0, 0)
             data = icmp_pkt.data
             actions = [datapath.ofproto_parser.OFPActionOutput(in_port)]
-            out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=ofproto.OFPP_CONTROLLER, actions=actions, data=data)
-            datapath.send_msg(out)
+            
+            RyuUtils.__send_packet_out(
+                datapath = datapath,
+                buffer_id = ev.msg.buffer_id,
+                in_port = ofproto.OFPP_CONTROLLER,
+                actions = actions,
+                data = data
+            )
             self.logger.info("!\tSending packet out ICMP")
+            
             return None
 
         route = self.routing_table.get_route(dpid, ipv4_header.dst)
@@ -389,11 +413,16 @@ class Router(RyuApp):
             return route
 
         # dest unreachable
-        icmp_pkt = self.__create_icmp_packet(pkt, 3, 0, dpid, in_port)
+        icmp_pkt =  ICMP(self.pkt_ev_info).__create_icmp_packet(3, 0)
         data = icmp_pkt.data
         actions = [datapath.ofproto_parser.OFPActionOutput(in_port)]
-        out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=ofproto.OFPP_CONTROLLER, actions=actions, data=data)
-        datapath.send_msg(out)
+        RyuUtils.__send_packet_out(
+            datapath=datapath,
+            buffer_id=ev.msg.buffer_id,
+            in_port=ofproto.OFPP_CONTROLLER,
+            actions=actions,
+            data=data
+        )
         self.logger.info("!\tSending packet out ICMP")
         
         return None
@@ -412,107 +441,148 @@ class Router(RyuApp):
 
         print(dst_mac)
         return False
-    
-    """ Task 1: End Routing Logic """
-
-    # SUPPORT FUNCTIONS
-    # -----------------
-    # Functions that may help with NAT router implementation
-    # The functions below are used in the default NAT router. These
-    # functions don't directly handle openflow events, but can be
-    # called from functions that do
-
-    def __add_flow(self, datapath, priority, match, actions, go_to_table_id=None, idle=60, hard=0, table_id=0):
-        """
-        Install Flow Table Modification
-        Takes a set of OpenFlow Actions and a OpenFlow Packet Match and creates
-        the corresponding Flow-Mod. This is then installed to a given datapath
-        at a given priority.
-        Documentation:
-        https://ryu.readthedocs.io/en/latest/ofproto_v1_3_ref.html#ryu.ofproto.ofproto_v1_3_parser.OFPFlowMod
-        """
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        if go_to_table_id != None:
-            inst.append(parser.OFPInstructionGotoTable(go_to_table_id))
-
-        mod = parser.OFPFlowMod(
-            datapath=datapath,
-            priority=priority,
-            match=match,
-            instructions=inst,
-            idle_timeout=idle,
-            hard_timeout=hard,
-            table_id=table_id
-        )
-        self.logger.info(
-            "✍️\tflow-Mod written to datapath: {}".format(dpid_to_str(datapath.id))
-        )
-        datapath.send_msg(mod)
-
-    def __illegal_packet(self, pkt, log=False):
-        """
-        Illegal Packet Check
-        Checks to see if a packet is allowed to be forwarded. You should use
-        these pre-populated values in your coursework to avoid issues.
-        """
-        for proto in self.ILLEGAL_PROTOCOLS:
-            if pkt.get_protocol(proto):
-                if log:
-                    self.logger.debug("🚨\tpacket with illegal protocol seen: {}".format(proto.__name__))
-                return True
-        return False
-
-    def __request_port_info(self, datapath):
-        """
-        Request Datapath Port Descriptions
-        Create a Port Desc Stats Request and send it to the given datapath. The
-        response for this will come in asynchronously in the function that
-        handles the event `EventOFPPortDescStatsReply`.
-        Documentation:
-        https://ryu.readthedocs.io/en/latest/ofproto_v1_3_ref.html#ryu.ofproto.ofproto_v1_3_parser.OFPPortDescStatsRequest
-        """
-        parser = datapath.ofproto_parser
-        req = parser.OFPPortDescStatsRequest(datapath, 0)
-        datapath.send_msg(req)
-        self.logger.debug(
-            "📤\trequesting datapath port information: {}".format(
-                dpid_to_str(datapath.id)
-            )
-        )
-
-    @set_ev_cls(ofp_event.EventOFPPortDescStatsReply, MAIN_DISPATCHER)
-    def __port_info_handler(self, ev):
-        """
-        Handle a OFPPortDescStatsReply event
-        Documentation:
-        https://ryu.readthedocs.io/en/latest/ofproto_v1_3_ref.html#ryu.ofproto.ofproto_v1_3_parser.OFPPortDescStatsReply
-        """
-        dpid = dpid_to_str(ev.msg.datapath.id)
-        for p in ev.msg.body:
-            self.logger.info(p.port_no)
-            self.logger.info(p.hw_addr)
-        self.logger.debug("❗️\tevent 'PortDescStatsReply' received!")
-    
-
-""" Class handling the router logic -- TASK 1 """
-class RouterLogic():
-    def __init__(self):
-        None
-
 
 """ Class handling the learning switch logic -- TASK 1 """
 class LearningSwitchLogic():
-    None
+    def __init__(self, pkt_ev_info):
+        self.pkt_ev_info = pkt_ev_info
+
+    def switch():
+        ev = self.pkt_ev_info.ev
+        datapath = self.pkt_ev_info.datapath
+        ofproto = self.pkt_ev_info.ofproto
+        parser = self.pkt_ev_info.parser
+        in_port = self.pkt_ev_info.in_port
+
+        data = ev.msg.data if ev.msg.buffer_id == ofproto.OFP_NO_BUFFER else None
+        actions = [parser.OFPActionOutput(ofproto.OFPP_NORMAL)]
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=ev.msg.buffer_id, in_port=in_port, actions=actions, data=data)
+        datapath.send_msg(out)
+        RyuUtils.__add_flow(
+            datapath = datapath,
+            priority = 1, 
+            match = parser.OFPMatch(eth_type=2054), 
+            actions = actions
+        )
+        
+        self.logger.info("Sending packet out ARP or IPs within same subnet")
 
 """ Class mainly responsible for creating icmp packets -- TASK 2 """
 class ICMP():
-    None
+    def __init__(self, pkt_ev_info):
+        self.pkt_ev_info = pkt_ev_info
+
+    def __create_icmp_packet(self, type, code):
+        pkt = self.pkt_ev_info.pkt
+        dpid = self.pkt_ev_info.dpid
+        router_in_port = self.pkt_ev_info.in_port
+
+        icmp_pkt = packet.Packet()
+
+        # Extracting old packet headers
+        ethernet_header = pkt.get_protocol(ethernet)
+        ipv4_header = pkt.get_protocol(ipv4)
+        icmp_header = pkt.get_protocol(icmp)
+        
+        # Adding Ethernet Header
+        icmp_pkt.add_protocol(ethernet(
+            ethertype = 2048, # used to define ipv4 protocol
+            src = ethernet_header.dst,
+            dst = ethernet_header.src
+        ))
+
+        # Adding IPv4 Header
+        router_ip_addr = self.interface_table.get_interface(dpid, router_in_port)["ip"]
+        if router_ip_addr == None:
+            raise Exception(f"Could find router ip address for port {router_in_port}")
+        
+        icmp_pkt.add_protocol(ipv4(
+            ttl = 64,
+            proto = 1, # 1 used to define the icmp protocol
+            src = router_ip_addr,
+            dst = ipv4_header.src,
+            version = 4
+        ))
+
+        # Adding ICMP Header
+        data = b""
+        if type == 3: # dest_unreachable
+            data = dest_unreach(
+                data = ipv4_header.serialize(None, None) + icmp_header.serialize(None, None)[:8] # unused + Internet Header + 64 bits of Original Data Datagram
+            )
+        elif type == 0 or type == 8: # echo & reply
+            data = icmp_header.data
+
+        icmp_pkt.add_protocol(icmp(
+            type_ = type,
+            code = code,
+            csum = 0, # autmatically generate checksum by ryu
+            data = data 
+        ))
+
+        icmp_pkt.serialize()
+        return icmp_pkt
 
 """ Class mainly responsible for creating firewall rules -- TASK 3 """
 class FirewallRules:
-    None
+    def __init__(self, pkt_ev_info, firewall_rules):
+        self.pkt_ev_info = pkt_ev_info
+        self.firewall_rules = firewall_rules
+
+    def __apply_firewall_rules(self):
+        dpid = self.pkt_ev_info.dpid
+        parser = self.pkt_ev_info.parser
+        datapath = self.pkt_ev_info.datapath
+
+        rules = self.firewall_rules.get_rules(dpid)
+        if rules == None:
+            return
+
+        for rule in rules:
+            # preparing the rule
+            self.__prepare_rule(rule)
+
+            # Writing the rule to the flow table (0) in the router
+            match = parser.OFPMatch(**rule["match"])
+            actions = []
+            table_id = 1
+            if rule["allow"] == False:
+                table_id = None
+
+            RyuUtils.__add_flow(
+                datapath = datapath, 
+                priority = rule["priority"], 
+                match = match, 
+                actions = actions, 
+                go_to_table_id = table_id, 
+                idle = 0, 
+                table_id = 0
+            )
+
+    def __prepare_rule(self, rule):
+        match = rule["match"]
+
+        # Fixing Naming and Data Types
+        if "ip_proto" in match and not isinstance(match["ip_proto"], int):
+            match["ip_proto"] = int(match["ip_proto"], 16)
+        if "eth_type" in match and not isinstance(match["eth_type"], int):
+            match["eth_type"] = int(match["eth_type"], 16)
+        
+        if "ip_dst" in match:
+            match["ipv4_dst"] = match.pop("ip_dst")
+        if "ip_src" in match:
+            match["ipv4_src"] = match.pop("ip_src")
+            
+        # Including Pre-requisite OpenFlow Fields
+        if "tcp_src" in match or "tcp_dst" in match:
+            match["ip_proto"] = 6
+    
+        if "udp_src" in match or "udp_dst" in match:
+            match["ip_proto"] = 17
+
+        if "ipv4_dst" in match or "ipv4_src" in match or "ip_proto" in match:
+            match["eth_type"] = 2048
+    
 
 """
 Table
