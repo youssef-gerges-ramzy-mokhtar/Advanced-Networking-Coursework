@@ -105,3 +105,4 @@ Plan:
                 	3. As a switch if it received an arp request it should return the mac address from its arp-table
         	"""
 
+	- (OPTIONAL) Idea add a controller entry in table id 0 and if you received the packet from table id 0 then there are 2 cases 1 firewall rules are added by not match any do anyway the packet will be dropped or firewall rules are already erased and in that case we write the new firewall rules
