@@ -241,15 +241,17 @@ class Router(RyuApp):
 
         self.logger.info("🤝\thandshake taken place with datapath: {}".format(dpid_to_str(datapath.id)))
 
-        # Flow entry responsible to handle packets with ttl = 1 #
-        RyuUtils.add_flow(
-            datapath = datapath,
-            priority = 2,
-            match = parser.OFPMatch(eth_type_nxm = 2048, nw_ttl = 1),
-            actions = actions,
-            idle = 0,
-            table_id = 1,
-        )
+        # Flow entry responsible to handle packets with ttl = 0 and ttl = 1 #
+        # ttl could never be negative it is a +ve field
+        for ttl in range(2):
+            RyuUtils.add_flow(
+                datapath = datapath,
+                priority = 2,
+                match = parser.OFPMatch(eth_type_nxm = 2048, nw_ttl = ttl),
+                actions = actions,
+                idle = 0,
+                table_id = 1,
+            )
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
@@ -391,10 +393,10 @@ class RouterLogic():
         # 7. Insert the a new Flow Entry to the local router
         dest_match = self.__get_dest_match(route, pkt.get_protocol(ipv4).dst)
         RyuUtils.add_flow(
-            datapath = datapath, 
-            priority = 1, 
-            match = parser.OFPMatch(eth_type=2048, ipv4_dst=dest_match), 
-            actions = actions, 
+            datapath = datapath,
+            priority = 1,
+            match = parser.OFPMatch(eth_type=2048, ipv4_dst=dest_match),
+            actions = actions,
             table_id=1
         )
         print("!\tFlow Entry Added to Data Path")
@@ -450,14 +452,11 @@ class RouterLogic():
         if not ipv4_header:
             return None
 
-        # checking if destination ip address is the router itself and icmp request to router
-        # >>> Problem in this condition handle later
-        # print(ipv4_header.dst == self.interface_table.get_interface(dpid, in_port)["ip"])
-        # print(icmp_header != None)
-        # print(icmp_header.type == 8)
-        if ipv4_header.dst == self.interface_table.get_interface(dpid, in_port)["ip"] and icmp_header != None and icmp_header.type == 8:
-            ICMP(self.pkt_ev_info, self.interface_table).send_icmp_packet(0, 0)
-            return None
+        # checking if the destination port matches any of the router interfaces
+        for interface in self.interface_table.get_all_interfaces(dpid):
+            if ipv4_header.dst == interface["ip"] and icmp_header != None and icmp_header.type == 8:
+                ICMP(self.pkt_ev_info, self.interface_table).send_icmp_packet(0, 0)
+                return None
 
         route = self.routing_table.get_route(dpid, ipv4_header.dst)
         if route[1] != None:
@@ -853,6 +852,9 @@ class StaticInterfaceTable(Table):
             if x['hw'] == hw:
                 return x
         return None
+
+    def get_all_interfaces(self, dpid: str):
+        return self._table[dpid]
     
 
 """
