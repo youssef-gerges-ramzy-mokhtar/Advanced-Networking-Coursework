@@ -1,11 +1,2 @@
->>>> Document why you have choosen specific values in the code
-	. add explnation why you have the different priorities {0, 1, 2, 3} for the routers in that order
-
-=========================================================================
-=========================================================================
-=========================================================================
-
 Plan:
 	- (OPTIONAL) check the validity of task 1 + 3 and check the flow-tables
-
-	- (OPTIONAL) Idea add a controller entry in table id 0 and if you received the packet from table id 0 then there are 2 cases 1 firewall rules are added by not match any do anyway the packet will be dropped or firewall rules are already erased and in that case we write the new firewall rules. That will not work, because if we write the firewally rules and return then a packet that is valid might be dropped

@@ -40,6 +40,19 @@ import json
 import sys
 import ipaddress
 
+"""
+    Flow Table Structure
+        - We have 2 flow tables in the routers, table 0 and table 1
+
+    Table 0: flow table 0 holds all the firewall rules from the firewall.json file, if a packet is allowed to be routed then it is sent from table 0 to table 1
+
+    Table 1: Holds different types of enteries with different priorities as following:
+        priority 0: default action when there are no matches the packet is sent to the controller
+        priority 1: Routing enteries from the routing.json file, used to route packets between hosts
+        priority 2: Invalid TTL, checks if ipv4 ttl field is set to 0 or 1, and if the match is successful the packet is sent to the controller
+        priority 3: Switching enteries, used to switch packets between h1 and h2 as they are in the same subnet. Has a higher priority than ttl as a switch never checks the ttl field
+"""
+
 class SwitchConfigurationTable:
     def __init__(self, arp_table, interface_table):
         self.arp_table = arp_table
