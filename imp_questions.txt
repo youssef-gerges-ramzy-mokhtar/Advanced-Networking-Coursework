@@ -1,20 +1,4 @@
-big questions
-	- Is it normal to make the idle_timeout=0 for the flow-entry that sends packets to the controller
-		. as by default it is set to 60 seconds of inactivity
-
-	- Is it a good idea to have the firewall rules in the router never destroyed
-
-	- I don't understand the difference icmp dest unreachable codes
-		. if a packet enters a router that is destined for an IP within a subnet unknown to it, WHAT DOES THIS MEAN?
-
-	- If I treat r1 as a switch for traffic in the subnet 10.0.0.0/24 then how can I ping from h1 to r1
-		. you still should be able because it is a router with a virtual switch :(
-
-	- If I did a ping to a router within the same subnet it will act as a switch "r1 specifically", then how could it respond to ping responses
-
 >>>> Document why you have choosen specific values in the code
-	. Add explanation why you have firewall rules never die and how they work
-	. Add explanation why you have the time for the mismatch rule to be 0, else the router will not be able to communicate with the controller
 	. add explanation why do you split the ips for h3 and h4, although in the routing table only a single wildcarded entery is added the reason is that we will modify the dst_mac address of the destination host and that is why we can't add a wildcard 
 	. add explnation about the switching logic used for task 1
 
@@ -25,28 +9,8 @@ big questions
 =========================================================================
 
 Plan:
-	- add a condition to the router logic that handles the case if it receives a ping request use 0/0
-
-	- finally go through your questions if something is unimportant delete it
-		. if something is important and you understand it comment it in your code for the marker
-		. if something is new leave it as it is
-
 	- (OPTIONAL) check the validity of task 1 + 3 and check the flow-tables
 
-	- (OPTIONAL) comment your code
-
-	- Used additional libraries dest_unreach + TimeExceeded
-
-	- (OPTIONAL) implement the methods to receive the pkt_info instead of creating a new object and passing it to the constructor
-
 	- You might want to add a flow for mac router mismatch
-
-	- reason about the below questions for task 1
-		if arp we just flood (or we could return the mac associated with us not sure!!!)
-        	"""
-            		Later that should be updated to handle 2 cases
-                	2. If we have received arp you can directly retrun the mac address from the ARP Table in the router without flooding
-                	3. As a switch if it received an arp request it should return the mac address from its arp-table
-        	"""
 
 	- (OPTIONAL) Idea add a controller entry in table id 0 and if you received the packet from table id 0 then there are 2 cases 1 firewall rules are added by not match any do anyway the packet will be dropped or firewall rules are already erased and in that case we write the new firewall rules

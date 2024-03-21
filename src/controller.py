@@ -225,6 +225,7 @@ class Router(RyuApp):
         
         self.__request_port_info(datapath)
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+        # The idel_timeout is equal to zero, because if this entery is deleted from the router then the router will not be able to communicate with the contorller
         RyuUtils.add_flow(
             datapath = datapath, 
             priority = 0, 
@@ -235,7 +236,11 @@ class Router(RyuApp):
         )
 
         # TASK 3: Applying firewall rules before any processing
-        # NOTE: All routing rules and flow-table miss rule are in table 1, and table 1 can only be accessed from the rules defined in table 0. And the rules defined in table 0 are the firewall rules
+        """
+        NOTE: All routing rules and flow-table miss rule are in table 1, and table 1 can only be accessed from the rules defined in table 0. And the rules defined in table 0 are the firewall rules
+        NOTE: the idle_timeout for the flow-mod of the firewalls rules are zero, which means the firewall-rules are never removed from the router
+                - the reason for such decision is to prevent packets that shouldn't be blocked from being dropped, while the firewall-rules are being reinstalled every 60 seconds
+        """
         firewall_handler = FirewallHandler(dpid, parser, datapath, self.firewall_rules)
         firewall_handler.apply_firewall_rules()
 
