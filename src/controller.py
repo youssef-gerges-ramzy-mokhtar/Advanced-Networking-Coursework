@@ -409,6 +409,8 @@ class RouterLogic():
     def __get_dest_match(self, route, pkt_dst_ip):
         hop, out_port, dest_ip = route
 
+        # if the next hop is None, that means that the next hop is the destination host and in that case we can't use a subnet/wildcard for the ip address
+        # example is h3 and h4, in the routing.json we have only a single entry but we can't do that when adding this entry to the flow-table as we will modify the destination mac when sending this packet out of r2
         if hop == None:
             return pkt_dst_ip
 
@@ -492,6 +494,7 @@ class LearningSwitchLogic():
         self.pkt_ev_info = pkt_ev_info
         self.switch_configuration_table = switch_configuration_table
 
+    # this method acts as a learning switch, if the packet received have been learned we will forward the packet the port directly, else we just flood the packet to all ports
     def switch(self):
         ev = self.pkt_ev_info.ev
         datapath = self.pkt_ev_info.datapath

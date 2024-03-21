@@ -1,7 +1,4 @@
 >>>> Document why you have choosen specific values in the code
-	. add explanation why do you split the ips for h3 and h4, although in the routing table only a single wildcarded entery is added the reason is that we will modify the dst_mac address of the destination host and that is why we can't add a wildcard 
-	. add explnation about the switching logic used for task 1
-
 	. add explnation why you have the different priorities {0, 1, 2, 3} for the routers in that order
 
 =========================================================================
@@ -10,7 +7,5 @@
 
 Plan:
 	- (OPTIONAL) check the validity of task 1 + 3 and check the flow-tables
-
-	- You might want to add a flow for mac router mismatch
 
 	- (OPTIONAL) Idea add a controller entry in table id 0 and if you received the packet from table id 0 then there are 2 cases 1 firewall rules are added by not match any do anyway the packet will be dropped or firewall rules are already erased and in that case we write the new firewall rules
